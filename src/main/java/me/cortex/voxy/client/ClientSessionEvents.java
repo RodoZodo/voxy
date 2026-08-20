@@ -46,10 +46,13 @@ public class ClientSessionEvents {
         if (VoxyCommon.isAvailable()) {
             if (VoxyConfig.CONFIG.enabled) {
                 VoxyCommon.createInstance();
-                notifyPlayer("Voxy: world engine started"
-                        + (VoxyVulkanRenderSystem.INSTANCE.isInitialized()
-                        ? " (Vulkan LoDs)"
-                        : " (ingest/save only — Graphics API is not Vulkan, far LoDs will not draw)"));
+                boolean gpu = VoxyVulkanRenderSystem.INSTANCE.isInitialized();
+                if (!gpu) {
+                    VoxyClient.persistVulkanPreference();
+                    notifyPlayer("Voxy: this session is OpenGL, so far LoDs cannot draw. Graphics API was set to Prefer Vulkan — fully quit Lunar and relaunch.");
+                } else {
+                    notifyPlayer("Voxy: world engine started (Vulkan LoDs)");
+                }
             } else {
                 Logger.info("Voxy: session started but Voxy is disabled in Sodium settings");
             }

@@ -16,7 +16,6 @@ import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
-import net.minecraft.world.level.lighting.LayerLightSectionStorage;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.concurrent.ConcurrentLinkedDeque;
@@ -102,79 +101,39 @@ public class VoxelIngestService {
         engine.markActive();
 
         var lightingProvider = chunk.getLevel().getLightEngine();
-        boolean gotLighting = false;
-
         int i = chunk.getMinSectionY() - 1;
-        boolean allEmpty = true;
-        for (var section : chunk.getSections()) {
-            i++;
-            if (section == null || !shouldIngestSection(section, chunk.getPos().x(), i, chunk.getPos().z())) continue;
-            allEmpty&=section.hasOnlyAir();
-            //if (section.isEmpty()) continue;
-            var pos = SectionPos.of(chunk.getPos(), i);
-            if (lightingProvider.getDebugSectionType(LightLayer.SKY, pos) != LayerLightSectionStorage.SectionType.LIGHT_AND_DATA && lightingProvider.getDebugSectionType(LightLayer.BLOCK, pos) != LayerLightSectionStorage.SectionType.LIGHT_AND_DATA)
-                continue;
-            gotLighting = true;
-        }
-
-        if (allEmpty&&!gotLighting) {
-            //Special case all empty chunk columns, we need to clear it out
-            i = chunk.getMinSectionY() - 1;
-            for (var section : chunk.getSections()) {
-                i++;
-                if (section == null || !shouldIngestSection(section, chunk.getPos().x(), i, chunk.getPos().z())) continue;
-                engine.acquireRef();
-                this.ingestQueue.add(new IngestSection(chunk.getPos().x(), i, chunk.getPos().z(), engine, section, null, null));
-                try {
-                    this.service.execute();
-                } catch (Exception e) {
-                    Logger.error("Executing had an error: assume shutting down, aborting",e);
-                    engine.releaseRef();//we must manually release
-                    break;
-                }
-            }
-        }
-
-        if (!gotLighting) {
-            return false;
-        }
-
         var blp = lightingProvider.getLayerListener(LightLayer.BLOCK);
         var slp = lightingProvider.getLayerListener(LightLayer.SKY);
-
-
-        i = chunk.getMinSectionY() - 1;
+        boolean queued = false;
         for (var section : chunk.getSections()) {
             i++;
             if (section == null || !shouldIngestSection(section, chunk.getPos().x(), i, chunk.getPos().z())) continue;
-            //if (section.isEmpty()) continue;
             var pos = SectionPos.of(chunk.getPos(), i);
-
-            var bl = blp.getDataLayerData(pos);
-            if (bl != null) {
-                bl = bl.copy();
+            DataLayer bl = null;
+            DataLayer sl = null;
+            try {
+                bl = blp.getDataLayerData(pos);
+                if (bl != null) {
+                    bl = bl.copy();
+                }
+                sl = slp.getDataLayerData(pos);
+                if (sl != null) {
+                    sl = sl.copy();
+                }
+            } catch (Throwable ignored) {
             }
-
-            var sl = slp.getDataLayerData(pos);
-            if (sl != null) {
-                sl = sl.copy();
-            }
-
-            //If its null for either, assume failure to obtain lighting and ignore section
-            //if (blNone && slNone) {
-            //    continue;
-            //}
-            engine.acquireRef();//This is not great but dont really have a better solution as all the others have there own problem
-            this.ingestQueue.add(new IngestSection(chunk.getPos().x(), i, chunk.getPos().z(), engine, section, bl, sl));//TODO: fixme, this is technically not safe todo on the chunk load ingest, we need to copy the section data so it cant be modified while being read
+            engine.acquireRef();
+            this.ingestQueue.add(new IngestSection(chunk.getPos().x(), i, chunk.getPos().z(), engine, section, bl, sl));
             try {
                 this.service.execute();
+                queued = true;
             } catch (Exception e) {
                 Logger.error("Executing had an error: assume shutting down, aborting",e);
-                engine.releaseRef();//we must manually release
+                engine.releaseRef();
                 break;
             }
         }
-        return true;
+        return queued;
     }
 
     public int getTaskCount() {

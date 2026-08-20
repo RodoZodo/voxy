@@ -44,9 +44,15 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         Component.translatable("voxy.config.general.enabled"),
                                         ()->CFG.enabled, v->{
                                             CFG.enabled=v;
-                                            //we need to special case enabled, since the render reload flag runs befor us and its quite important we get it right
-                                            if (v && ClientSessionEvents.inSession) {//We should only load when we are in session
-                                                VoxyCommon.createInstance();
+                                            if (v) {
+                                                var mc = net.minecraft.client.Minecraft.getInstance();
+                                                if (mc != null && mc.level != null) {
+                                                    if (!ClientSessionEvents.inSession) {
+                                                        ClientSessionEvents.sessionStart();
+                                                    } else {
+                                                        VoxyCommon.createInstance();
+                                                    }
+                                                }
                                             }
                                         })
                                         .setPostChangeRunner(c->{

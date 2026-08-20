@@ -75,6 +75,7 @@ public class VoxyClient implements ClientModInitializer {
             var ctx = VkContext.INSTANCE;
             if (!ctx.shouldActivate()) {
                 Logger.warn("Voxy (Vulkan): GPU path disabled - " + ctx.getDeactivationReason());
+                persistVulkanPreference();
                 return;
             }
 
@@ -91,6 +92,30 @@ public class VoxyClient implements ClientModInitializer {
             Logger.info("Voxy (Vulkan): render system initialized: " + VoxyVulkanRenderSystem.INSTANCE.describe());
         } catch (Throwable t) {
             Logger.warn("Voxy (Vulkan): render system initialization failed, GPU LoDs disabled", t);
+        }
+    }
+
+    /**
+     * Lunar's unclean exits trip vanilla's crash ladder, which writes Graphics API to OpenGL.
+     * Put Prefer Vulkan back in options.txt so the next launch can actually create a Vulkan device.
+     */
+    public static void persistVulkanPreference() {
+        try {
+            var mc = net.minecraft.client.Minecraft.getInstance();
+            if (mc == null || mc.options == null) {
+                return;
+            }
+            var option = mc.options.preferredGraphicsBackend();
+            if (option == null) {
+                return;
+            }
+            if (option.get() != net.minecraft.client.PreferredGraphicsApi.VULKAN) {
+                option.set(net.minecraft.client.PreferredGraphicsApi.VULKAN);
+                mc.options.save();
+                Logger.info("Voxy: wrote Graphics API = Prefer Vulkan for the next launch");
+            }
+        } catch (Throwable t) {
+            Logger.warn("Voxy: failed to persist Vulkan Graphics API", t);
         }
     }
 
