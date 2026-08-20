@@ -35,6 +35,10 @@
       "config": "client.voxy.mixins.json",
       "environment": "client"
     },
+    {
+      "config": "client.voxy.vulkan.mixins.json",
+      "environment": "client"
+    },
     "common.voxy.mixins.json"
   ],
   "depends": {

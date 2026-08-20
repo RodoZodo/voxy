@@ -1,0 +1,19 @@
+{
+  "required": false,
+  "package": "me.cortex.voxy.client.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "client": [
+    "minecraft.GpuDeviceAccessor",
+    "minecraft.MixinRenderSystem",
+    "minecraft.util.MixinVulkanDevice",
+    "minecraft.vulkan.VulkanCommandEncoderAccessor",
+    "minecraft.vulkan.VulkanCommandEncoderMixin",
+    "minecraft.vulkan.VulkanRenderPassAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  },
+  "overwrites": {
+    "requireAnnotations": true
+  }
+}

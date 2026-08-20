@@ -10,11 +10,12 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 //Thanks iris for making me need todo this ;-; _irritater_
-@Mixin(RenderSystem.class)
+@Mixin(value = RenderSystem.class, remap = false)
 public class MixinRenderSystem {
-    //We need to inject before iris to initalize our systems
-    @Inject(method = "initRenderer", order = 900, remap = false, at = @At("RETURN"))
+    //We need to inject before iris to initalize our systems.
+    // require=0: Lunar/Ichor may patch or skip blaze3d mixins; Minecraft.<init> TAIL is the fallback.
+    @Inject(method = "initRenderer", order = 900, remap = false, at = @At("RETURN"), require = 0)
     private static void voxy$injectInit(GpuDevice device, CallbackInfo ci) {
-        VoxyClient.initVoxyClient();
+        VoxyClient.bootstrapRenderer(device);
     }
 }

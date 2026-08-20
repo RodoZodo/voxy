@@ -5,7 +5,7 @@ import org.lwjgl.vulkan.VkCommandBuffer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Invoker;
 
-@Mixin(VulkanRenderPass.class)
+@Mixin(value = VulkanRenderPass.class, remap = false)
 public interface VulkanRenderPassAccessor {
     /** The primary command buffer the pass records into (dynamic rendering, no secondary CBs). */
     @Invoker("commandBuffer")

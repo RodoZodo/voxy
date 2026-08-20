@@ -8,14 +8,20 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Captures the active {@link VulkanDevice} as soon as Minecraft initializes the Vulkan backend.
- * Runs on the render thread during startup, before {@code RenderSystem.initRenderer} returns,
- * so {@link VoxyClient#initVoxyClient()} can rely on {@link VkContext} being populated.
+ * Best-effort capture of {@link VulkanDevice} as soon as Minecraft initializes the Vulkan backend.
+ * Must never throw: this runs inside {@code VulkanDevice.<init>}, which is on Minecraft's
+ * graphics-backend startup path — an exception trips the crash ladder back to OpenGL.
+ *
+ * <p>Lunar/Ichor may skip this mixin (optional config). {@code GpuDevice} unwrap +
+ * {@code Minecraft.<init>} TAIL are the fallbacks.
  */
-@Mixin(VulkanDevice.class)
+@Mixin(value = VulkanDevice.class, remap = false)
 public class MixinVulkanDevice {
-    @Inject(method = "<init>", at = @At("TAIL"))
+    @Inject(method = "<init>", at = @At("TAIL"), require = 0)
     private void voxy$capture(CallbackInfo ci) {
-        VkContext.INSTANCE.capture((VulkanDevice) (Object) this);
+        try {
+            VkContext.INSTANCE.capture((VulkanDevice) (Object) this);
+        } catch (Throwable ignored) {
+        }
     }
 }

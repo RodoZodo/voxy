@@ -8,7 +8,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 import org.spongepowered.asm.mixin.gen.Invoker;
 
-@Mixin(VulkanCommandEncoder.class)
+@Mixin(value = VulkanCommandEncoder.class, remap = false)
 public interface VulkanCommandEncoderAccessor {
     /** The render pass currently being recorded, if any. */
     @Accessor("currentRenderPass")

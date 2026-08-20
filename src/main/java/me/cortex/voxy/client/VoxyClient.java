@@ -1,5 +1,7 @@
 package me.cortex.voxy.client;
 
+import com.mojang.blaze3d.systems.GpuDevice;
+import com.mojang.blaze3d.systems.RenderSystem;
 import me.cortex.voxy.client.core.vk.VkContext;
 import me.cortex.voxy.client.core.vk.VoxyVulkanRenderSystem;
 import me.cortex.voxy.common.Logger;
@@ -7,7 +9,7 @@ import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.client.Minecraft;
+import org.jetbrains.annotations.Nullable;
 
 import java.util.HashSet;
 import java.util.function.Consumer;
@@ -16,11 +18,38 @@ import java.util.function.Function;
 public class VoxyClient implements ClientModInitializer {
     private static final HashSet<String> FREX = new HashSet<>();
     private static boolean instanceFactorySet;
+    private static boolean rendererBootstrapped;
+
+    /**
+     * Capture the GPU backend (if any) and init Voxy. Idempotent and never throws — Lunar/Ichor
+     * and Minecraft's crash ladder both abort the whole process if renderer startup throws.
+     *
+     * <p>A null device with no live {@link GpuDevice} is ignored (too early, e.g. an unused
+     * {@code Minecraft} constructor) so we do not lock bootstrap before the backend exists.
+     */
+    public static void bootstrapRenderer(@Nullable GpuDevice device) {
+        try {
+            if (device == null) {
+                device = RenderSystem.tryGetDevice();
+            }
+            if (device == null) {
+                return;
+            }
+            VkContext.INSTANCE.captureFromGpuDevice(device);
+            initVoxyClient();
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): renderer bootstrap failed", t);
+        }
+    }
 
     public static void initVoxyClient() {
+        if (rendererBootstrapped) {
+            return;
+        }
+        rendererBootstrapped = true;
+
         var ctx = VkContext.INSTANCE;
         if (!ctx.shouldActivate()) {
-            // Voxy is a Vulkan-only renderer: auto-deactivate with a clear reason.
             Logger.warn("Voxy (Vulkan): disabled - " + ctx.getDeactivationReason());
             return;
         }
@@ -51,8 +80,16 @@ public class VoxyClient implements ClientModInitializer {
         }
     }
 
+    public static boolean isLunarClient() {
+        var loader = FabricLoader.getInstance();
+        return loader.isModLoaded("ichor") || loader.isModLoaded("lunar") || loader.isModLoaded("lunarclient");
+    }
+
     @Override
     public void onInitializeClient() {
+        Logger.info("Voxy (Vulkan): client entrypoint lunar=" + isLunarClient()
+                + " ctx=" + VkContext.INSTANCE);
+
         DebugEntries.init();
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {

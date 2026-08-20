@@ -6,15 +6,10 @@
     "minecraft.MixinClientChunkCache",
     "minecraft.MixinClientLevel",
     "minecraft.MixinDebugScreenEntryList",
-    "minecraft.MixinRenderSystem",
     "minecraft.session.MixinClientPacketListener",
     "minecraft.session.MixinMinecraft",
     "minecraft.util.MixinBlockableEventLoop",
-    "minecraft.util.MixinClientCommonPacketListenerImpl",
-    "minecraft.util.MixinVulkanDevice",
-    "minecraft.vulkan.VulkanCommandEncoderAccessor",
-    "minecraft.vulkan.VulkanCommandEncoderMixin",
-    "minecraft.vulkan.VulkanRenderPassAccessor"
+    "minecraft.util.MixinClientCommonPacketListenerImpl"
   ],
   "injectors": {
     "defaultRequire": 1

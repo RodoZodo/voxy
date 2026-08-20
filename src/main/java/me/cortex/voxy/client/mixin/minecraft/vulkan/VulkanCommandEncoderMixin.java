@@ -25,33 +25,45 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *   <li>{@code submit} HEAD - end of frame catch-all: any pending stream work.</li>
  * </ol>
  */
-@Mixin(VulkanCommandEncoder.class)
+@Mixin(value = VulkanCommandEncoder.class, remap = false)
 public abstract class VulkanCommandEncoderMixin {
     @Shadow
     @Nullable
     private VulkanRenderPass currentRenderPass;
 
-    @Inject(method = "createRenderPass", at = @At("RETURN"))
+    @Inject(method = "createRenderPass", at = @At("RETURN"), require = 0)
     private void voxy$onCreateRenderPass(RenderPassDescriptor descriptor, CallbackInfoReturnable<RenderPassBackend> cir) {
-        VoxyVulkanRenderSystem.INSTANCE.onRenderPassCreated((VulkanRenderPass) cir.getReturnValue(), descriptor);
-    }
-
-    @Inject(method = "submitRenderPass", at = @At("HEAD"))
-    private void voxy$onSubmitRenderPass(CallbackInfo ci) {
-        var pass = this.currentRenderPass;
-        if (pass == null) {
-            return;
+        try {
+            VoxyVulkanRenderSystem.INSTANCE.onRenderPassCreated((VulkanRenderPass) cir.getReturnValue(), descriptor);
+        } catch (Throwable ignored) {
         }
-        VoxyVulkanRenderSystem.INSTANCE.onRenderPassSubmit(pass);
     }
 
-    @Inject(method = "submitRenderPass", at = @At("RETURN"))
+    @Inject(method = "submitRenderPass", at = @At("HEAD"), require = 0)
+    private void voxy$onSubmitRenderPass(CallbackInfo ci) {
+        try {
+            var pass = this.currentRenderPass;
+            if (pass == null) {
+                return;
+            }
+            VoxyVulkanRenderSystem.INSTANCE.onRenderPassSubmit(pass);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @Inject(method = "submitRenderPass", at = @At("RETURN"), require = 0)
     private void voxy$onRenderPassEnded(CallbackInfo ci) {
-        VoxyVulkanRenderSystem.INSTANCE.onRenderPassEnded(((VulkanCommandEncoderAccessor) (Object) this).voxy$invokeCommandBuffer());
+        try {
+            VoxyVulkanRenderSystem.INSTANCE.onRenderPassEnded(((VulkanCommandEncoderAccessor) (Object) this).voxy$invokeCommandBuffer());
+        } catch (Throwable ignored) {
+        }
     }
 
-    @Inject(method = "submit", at = @At("HEAD"))
+    @Inject(method = "submit", at = @At("HEAD"), require = 0)
     private void voxy$onFrameSubmit(CallbackInfo ci) {
-        VoxyVulkanRenderSystem.INSTANCE.onFrameSubmit(((VulkanCommandEncoderAccessor) (Object) this).voxy$invokeCommandBuffer());
+        try {
+            VoxyVulkanRenderSystem.INSTANCE.onFrameSubmit(((VulkanCommandEncoderAccessor) (Object) this).voxy$invokeCommandBuffer());
+        } catch (Throwable ignored) {
+        }
     }
 }
