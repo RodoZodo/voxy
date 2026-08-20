@@ -9,8 +9,10 @@ import me.cortex.voxy.client.core.vk.VoxyVulkanRenderSystem;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.StorageConfigUtil;
 import me.cortex.voxy.common.config.ConfigBuildCtx;
+import me.cortex.voxy.common.config.section.SectionSerializationStorage;
 import me.cortex.voxy.common.config.section.SectionStorage;
 import me.cortex.voxy.common.config.section.SectionStorageConfig;
+import me.cortex.voxy.common.config.storage.inmemory.MemoryStorageBackend;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.commonImpl.ImportManager;
 import me.cortex.voxy.commonImpl.VoxyInstance;
@@ -60,7 +62,12 @@ public class VoxyClientInstance extends VoxyInstance {
         ctx.setProperty(ConfigBuildCtx.WORLD_IDENTIFIER, identifier.getWorldId());
         ctx.setProperty(ConfigBuildCtx.PLAYER_UUID, Minecraft.getInstance().getUser().getProfileId().toString().replace(':','-'));
         ctx.pushPath(ConfigBuildCtx.DEFAULT_STORAGE_PATH);
-        return this.config.sectionStorageConfig.build(ctx);
+        try {
+            return this.config.sectionStorageConfig.build(ctx);
+        } catch (Throwable t) {
+            Logger.error("Voxy: configured storage failed; using in-memory fallback (LoDs will not persist this session)", t);
+            return new SectionSerializationStorage(new MemoryStorageBackend());
+        }
     }
 
     public Path getStorageBasePath() {

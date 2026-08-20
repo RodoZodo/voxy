@@ -309,15 +309,16 @@ tasks.register('makeExcludedRocksDB', Zip) {
     from {->zipTree(files.first())}
     archiveFileName.set(providers.provider{files.first().name})
 
+    // Keep Windows, Linux x64/ARM, and macOS (jnilib). Drop only exotic Linux ABIs.
     exclude {
         def file = it.name
-        if (file.endsWith(".jnilib")) {
-            return true
+        if (file.endsWith(".jnilib") || file.endsWith(".dll")) {
+            return false
         }
         if (!file.endsWith(".so")) {
             return false
         }
-        return ["osx", "linux32", "musl", "s390x", "riscv64", "ppc64le", "aarch64"].any(file::contains)
+        return ["linux32", "musl", "s390x", "riscv64", "ppc64le"].any(file::contains)
     }
 }
 
@@ -362,10 +363,16 @@ dependencies {
     include(implementation "org.lwjgl:lwjgl-zstd:unsafe")
     runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-windows"
     runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-linux"
+    runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-macos"
+    runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-macos-arm64"
     include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-windows")
     include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-windows")
     include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-linux")
     include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-linux")
+    include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-macos")
+    include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-macos")
+    include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-macos-arm64")
+    include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-macos-arm64")
     if (INCLUDE_OTHER_ARCHS) {
         runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-linux-arm64"
         include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-linux-arm64")

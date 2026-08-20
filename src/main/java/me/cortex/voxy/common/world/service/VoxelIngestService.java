@@ -155,9 +155,14 @@ public class VoxelIngestService {
         var instance = VoxyCommon.getInstance();
         if (instance == null) return false;
         if (!instance.isIngestEnabled(worldId)) return false;
-        var engine = instance.getOrCreate(worldId);
-        if (engine == null) return false;
-        return instance.getIngestService().enqueueIngest(engine, chunk);
+        try {
+            var engine = instance.getOrCreate(worldId);
+            if (engine == null) return false;
+            return instance.getIngestService().enqueueIngest(engine, chunk);
+        } catch (Throwable t) {
+            Logger.error("Chunk ingest failed (storage/native); not disconnecting", t);
+            return false;
+        }
     }
 
     //Try to automatically ingest the chunk into the correct world
