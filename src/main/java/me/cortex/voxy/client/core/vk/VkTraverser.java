@@ -292,6 +292,7 @@ public final class VkTraverser implements AutoCloseable {
                 if (count != 0) {
                     var mb = new MemoryBuffer(count * 8L + 8);
                     MemoryUtil.memCopy(MemoryUtil.memAddress(readback), mb.address, count * 8L + 8);
+                    MemoryUtil.memPutInt(mb.address, count);
                     this.nodeManager.submitRequestBatch(mb);
                 }
             });

@@ -13,6 +13,7 @@ import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VkBufferCopy;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDescriptorBufferInfo;
+import org.lwjgl.vulkan.VkDescriptorImageInfo;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkRect2D;
 import org.lwjgl.vulkan.VkViewport;
@@ -158,10 +159,23 @@ public final class VkSectionRenderer implements AutoCloseable {
         this.quadsLayout = new VkPipelineLayout(device, new VkPipelineLayout.Binding[]{
                 new VkPipelineLayout.Binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT),
                 new VkPipelineLayout.Binding(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT),
+                new VkPipelineLayout.Binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT),
+                new VkPipelineLayout.Binding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT),
                 new VkPipelineLayout.Binding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_VERTEX_BIT),
+                new VkPipelineLayout.Binding(6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_VERTEX_BIT),
         }, true);
-        var qvWhite = compile(compiler, "lod/gl46/quads_white.vert", Map.of(
-                "QUAD_BUFFER_BINDING","1","POSITION_SCRATCH_BINDING","5"));
+        var tintDefsWhite = new java.util.HashMap<String,String>();
+        tintDefsWhite.put("QUAD_BUFFER_BINDING","1");
+        tintDefsWhite.put("MODEL_BUFFER_BINDING","3");
+        tintDefsWhite.put("MODEL_COLOUR_BUFFER_BINDING","4");
+        tintDefsWhite.put("POSITION_SCRATCH_BINDING","5");
+        tintDefsWhite.put("LIGHTING_SAMPLER_BINDING","6");
+        tintDefsWhite.put("NO_SHADE_FACE_TINT","1.0");
+        tintDefsWhite.put("UP_FACE_TINT","1.0");
+        tintDefsWhite.put("DOWN_FACE_TINT","0.9");
+        tintDefsWhite.put("Z_AXIS_FACE_TINT","0.85");
+        tintDefsWhite.put("X_AXIS_FACE_TINT","0.82");
+        var qvWhite = compile(compiler, "lod/gl46/quads_white.vert", tintDefsWhite);
         var qfWhite = compile(compiler, "lod/gl46/quads_white.frag", Map.of());
         this.quadsPipeline = VkPipelineBuilder.createGraphics(device, this.quadsLayout, qvWhite, qfWhite,
                 VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_D32_SFLOAT, null,
@@ -338,12 +352,22 @@ public final class VkSectionRenderer implements AutoCloseable {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this.quadsPipeline);
             var uniformInfo = VkDescriptorBufferInfo.calloc(1, stack); uniformInfo.get(0).buffer(this.uniformBuffer.handle()).offset(0).range(1024);
             var quadInfo = VkDescriptorBufferInfo.calloc(1, stack); quadInfo.get(0).buffer(this.drawCallBuffer.handle()).offset(0).range(this.drawCallBuffer.size());
-            // Use positionScratch as quad data for white quads (dummy)
             var posInfo = VkDescriptorBufferInfo.calloc(1, stack); posInfo.get(0).buffer(this.positionScratchBuffer.handle()).offset(0).range(this.positionScratchBuffer.size());
-            var writes = VkWriteDescriptorSet.calloc(3, stack);
+            var writes = VkWriteDescriptorSet.calloc(6, stack);
             writes.get(0).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(0).dstSet(0); writes.get(0).dstBinding(0); writes.get(0).descriptorCount(1); writes.get(0).descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER); writes.get(0).pBufferInfo(uniformInfo);
             writes.get(1).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(1).dstSet(0); writes.get(1).dstBinding(1); writes.get(1).descriptorCount(1); writes.get(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(1).pBufferInfo(quadInfo);
-            writes.get(2).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(2).dstSet(0); writes.get(2).dstBinding(5); writes.get(2).descriptorCount(1); writes.get(2).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(2).pBufferInfo(posInfo);
+            
+            var modelInfo = VkDescriptorBufferInfo.calloc(1, stack); modelInfo.get(0).buffer(this.modelBuffer.handle()).offset(0).range(this.modelBuffer.size());
+            writes.get(2).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(2).dstSet(0); writes.get(2).dstBinding(3); writes.get(2).descriptorCount(1); writes.get(2).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(2).pBufferInfo(modelInfo);
+            
+            var colourInfo = VkDescriptorBufferInfo.calloc(1, stack); colourInfo.get(0).buffer(this.modelColourBuffer.handle()).offset(0).range(this.modelColourBuffer.size());
+            writes.get(3).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(3).dstSet(0); writes.get(3).dstBinding(4); writes.get(3).descriptorCount(1); writes.get(3).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(3).pBufferInfo(colourInfo);
+            
+            writes.get(4).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(4).dstSet(0); writes.get(4).dstBinding(5); writes.get(4).descriptorCount(1); writes.get(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(4).pBufferInfo(posInfo);
+            
+            var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.atlasSampler.handle()).imageView(this.atlasTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+            writes.get(5).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(5).dstSet(0); writes.get(5).dstBinding(6); writes.get(5).descriptorCount(1); writes.get(5).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); writes.get(5).pImageInfo(samplerInfo);
+            
             vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this.quadsLayout.handle(), 0, writes);
             var shared = VoxyVulkanRenderSystem.INSTANCE.getSharedIndices();
             if (shared != null) {
@@ -366,10 +390,27 @@ public final class VkSectionRenderer implements AutoCloseable {
             var uniformInfo = VkDescriptorBufferInfo.calloc(1, stack); uniformInfo.get(0).buffer(this.uniformBuffer.handle()).offset(0).range(1024);
             var quadInfo = VkDescriptorBufferInfo.calloc(1, stack); quadInfo.get(0).buffer(this.drawCallBuffer.handle()).offset(0).range(this.drawCallBuffer.size());
             var posInfo = VkDescriptorBufferInfo.calloc(1, stack); posInfo.get(0).buffer(this.positionScratchBuffer.handle()).offset(0).range(this.positionScratchBuffer.size());
-            var writes = VkWriteDescriptorSet.calloc(3, stack);
+            
+            boolean isWhiteLayout = (layout == this.quadsLayout);
+            var writes = VkWriteDescriptorSet.calloc(isWhiteLayout ? 6 : 3, stack);
             writes.get(0).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(0).dstSet(0); writes.get(0).dstBinding(0); writes.get(0).descriptorCount(1); writes.get(0).descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER); writes.get(0).pBufferInfo(uniformInfo);
             writes.get(1).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(1).dstSet(0); writes.get(1).dstBinding(1); writes.get(1).descriptorCount(1); writes.get(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(1).pBufferInfo(quadInfo);
-            writes.get(2).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(2).dstSet(0); writes.get(2).dstBinding(5); writes.get(2).descriptorCount(1); writes.get(2).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(2).pBufferInfo(posInfo);
+            
+            if (isWhiteLayout) {
+                var modelInfo = VkDescriptorBufferInfo.calloc(1, stack); modelInfo.get(0).buffer(this.modelBuffer.handle()).offset(0).range(this.modelBuffer.size());
+                writes.get(2).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(2).dstSet(0); writes.get(2).dstBinding(3); writes.get(2).descriptorCount(1); writes.get(2).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(2).pBufferInfo(modelInfo);
+                
+                var colourInfo = VkDescriptorBufferInfo.calloc(1, stack); colourInfo.get(0).buffer(this.modelColourBuffer.handle()).offset(0).range(this.modelColourBuffer.size());
+                writes.get(3).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(3).dstSet(0); writes.get(3).dstBinding(4); writes.get(3).descriptorCount(1); writes.get(3).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(3).pBufferInfo(colourInfo);
+                
+                writes.get(4).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(4).dstSet(0); writes.get(4).dstBinding(5); writes.get(4).descriptorCount(1); writes.get(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(4).pBufferInfo(posInfo);
+                
+                var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.atlasSampler.handle()).imageView(this.atlasTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                writes.get(5).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(5).dstSet(0); writes.get(5).dstBinding(6); writes.get(5).descriptorCount(1); writes.get(5).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); writes.get(5).pImageInfo(samplerInfo);
+            } else {
+                writes.get(2).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(2).dstSet(0); writes.get(2).dstBinding(5); writes.get(2).descriptorCount(1); writes.get(2).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(2).pBufferInfo(posInfo);
+            }
+            
             vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout.handle(), 0, writes);
             var shared = VoxyVulkanRenderSystem.INSTANCE.getSharedIndices();
             if (shared != null) {

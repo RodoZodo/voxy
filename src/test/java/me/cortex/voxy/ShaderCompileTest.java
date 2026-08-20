@@ -109,6 +109,26 @@ public class ShaderCompileTest {
                 m2.free(null);
                 System.out.println("OK cull/raster.frag");
             }
+            // quads_white verification
+            {
+                var d = new java.util.HashMap<String,String>();
+                d.put("QUAD_BUFFER_BINDING","1");
+                d.put("MODEL_BUFFER_BINDING","3");
+                d.put("MODEL_COLOUR_BUFFER_BINDING","4");
+                d.put("POSITION_SCRATCH_BINDING","5");
+                d.put("LIGHTING_SAMPLER_BINDING","6");
+                d.put("NO_SHADE_FACE_TINT","1.0");
+                d.put("UP_FACE_TINT","1.0");
+                d.put("DOWN_FACE_TINT","0.9");
+                d.put("Z_AXIS_FACE_TINT","0.85");
+                d.put("X_AXIS_FACE_TINT","0.82");
+                var m = compiler.compile("voxy:quads_white_vert", load("lod/gl46/quads_white.vert"), VkShaderStage.VERTEX, d);
+                m.free(null);
+                System.out.println("OK lod/gl46/quads_white.vert");
+                var m2 = compiler.compile("voxy:quads_white_frag", load("lod/gl46/quads_white.frag"), VkShaderStage.FRAGMENT, new java.util.HashMap<>());
+                m2.free(null);
+                System.out.println("OK lod/gl46/quads_white.frag");
+            }
             // Post SSAO / blits
             {
                 var m = compiler.compile("voxy:ssao", load("post/ssao.comp"), VkShaderStage.COMPUTE);
