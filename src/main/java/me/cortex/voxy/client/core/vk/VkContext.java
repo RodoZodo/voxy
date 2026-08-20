@@ -45,16 +45,42 @@ public final class VkContext {
      * mixin — never throws.
      */
     public void capture(VulkanDevice device) {
-        if (device == null || this.device != null) {
+        if (device == null) {
+            return;
+        }
+        if (this.device == device) {
             return;
         }
         try {
             this.device = device;
             this.capabilities = new VkCapabilities(device.vkDevice().getPhysicalDevice(), device.instance());
+            Logger.info("Voxy (Vulkan): captured VulkanDevice caps=" + this.capabilities);
         } catch (Throwable t) {
-            this.device = null;
-            this.capabilities = null;
-            Logger.warn("Voxy (Vulkan): VulkanDevice capture failed", t);
+            // Keep the device even if capability query fails — without it LoDs cannot hook.
+            Logger.warn("Voxy (Vulkan): VulkanDevice captured but capability query failed", t);
+        }
+    }
+
+    /** Capture from {@link GpuDevice}'s constructor argument. Never throws. */
+    public void captureFromBackend(@Nullable Object backend) {
+        try {
+            if (backend == null) {
+                Logger.warn("Voxy (Vulkan): GpuDevice constructed with null backend");
+                return;
+            }
+            Logger.info("Voxy (Vulkan): GpuDevice backend arg class=" + backend.getClass().getName());
+            if (backend instanceof VulkanDevice vd) {
+                capture(vd);
+                return;
+            }
+            VulkanDevice found = findVulkanDeviceDeep(backend, 0, new IdentityHashMap<>());
+            if (found != null) {
+                capture(found);
+                return;
+            }
+            Logger.warn("Voxy (Vulkan): backend is not a VulkanDevice: " + backend.getClass().getName());
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): captureFromBackend failed", t);
         }
     }
 
@@ -143,12 +169,48 @@ public final class VkContext {
     private static GpuDeviceBackend readBackend(GpuDevice gpu) {
         try {
             if (gpu instanceof GpuDeviceAccessor accessor) {
-                return accessor.voxy$backend();
+                var backend = accessor.voxy$backend();
+                if (backend != null) {
+                    return backend;
+                }
             }
-        } catch (Throwable ignored) {
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): GpuDeviceAccessor failed", t);
         }
         Object raw = readDeclaredField(gpu, "backend");
+        if (raw == null) {
+            raw = readFieldUnsafe(gpu, "backend");
+        }
+        if (raw != null && !(raw instanceof GpuDeviceBackend)) {
+            Logger.warn("Voxy (Vulkan): GpuDevice.backend class=" + raw.getClass().getName());
+        }
         return raw instanceof GpuDeviceBackend backend ? backend : null;
+    }
+
+    @Nullable
+    private static Object readFieldUnsafe(Object obj, String name) {
+        try {
+            Field f = null;
+            Class<?> c = obj.getClass();
+            while (c != null && c != Object.class) {
+                try {
+                    f = c.getDeclaredField(name);
+                    break;
+                } catch (NoSuchFieldException e) {
+                    c = c.getSuperclass();
+                }
+            }
+            if (f == null) {
+                return null;
+            }
+            Field uf = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+            uf.setAccessible(true);
+            sun.misc.Unsafe unsafe = (sun.misc.Unsafe) uf.get(null);
+            return unsafe.getObject(obj, unsafe.objectFieldOffset(f));
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): unsafe read of " + name + " failed", t);
+            return null;
+        }
     }
 
     @Nullable

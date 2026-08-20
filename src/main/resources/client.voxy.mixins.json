@@ -6,6 +6,8 @@
     "minecraft.MixinClientChunkCache",
     "minecraft.MixinClientLevel",
     "minecraft.MixinDebugScreenEntryList",
+    "minecraft.MixinGpuDevice",
+    "minecraft.GpuDeviceAccessor",
     "minecraft.session.MixinClientPacketListener",
     "minecraft.session.MixinMinecraft",
     "minecraft.util.MixinBlockableEventLoop",

@@ -1,5 +1,7 @@
 accessWidener v1 official
 
+accessible field com/mojang/blaze3d/systems/GpuDevice backend Lcom/mojang/blaze3d/systems/GpuDeviceBackend;
+
 accessible class net/minecraft/client/multiplayer/ClientChunkCache$Storage
 
 accessible field net/minecraft/client/renderer/texture/TextureAtlas maxMipLevel I
