@@ -23,6 +23,7 @@ import static org.lwjgl.vulkan.VK11.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES
 import static org.lwjgl.vulkan.VK11.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
 import static org.lwjgl.vulkan.VK11.VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
 import static org.lwjgl.vulkan.VK11.VK_SUBGROUP_FEATURE_BASIC_BIT;
+import static org.lwjgl.vulkan.VK11.VK_SUBGROUP_FEATURE_CLUSTERED_BIT;
 import static org.lwjgl.vulkan.VK11.VK_SUCCESS;
 import static org.lwjgl.vulkan.VK11.vkEnumerateDeviceExtensionProperties;
 import static org.lwjgl.vulkan.VK11.vkGetPhysicalDeviceFeatures2;
@@ -35,9 +36,10 @@ import static org.lwjgl.vulkan.VK13.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3
  * Feature/capability detection for the Vulkan backend, ported from the GL-era {@code
  * me.cortex.voxy.client.core.gl.Capabilities}. Queried once when the backend is captured.
  *
- * <p>Voxy's hard requirements: Vulkan 1.2 baseline (guaranteed by MC's own renderer), compute
- * support, {@code shaderInt64}, subgroup ops, indirect drawing, sparse residency (optional
- * fallback), and optionally mesh shaders.
+ * <p>Voxy's hard requirements for GPU LoD <em>drawing</em>: Vulkan 1.2 baseline (guaranteed by
+ * MC's own renderer), compute, subgroup basic ops, and dynamic rendering. {@code shaderInt64}
+ * is optional (GPU voxel mip / GPU mesher); without it those paths fall back to CPU. Subgroup
+ * clustered is optional (HiZ chain); Apple GPUs via MoltenVK often lack it.
  */
 public final class VkCapabilities {
     // VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT = 1000291000.
@@ -64,6 +66,7 @@ public final class VkCapabilities {
     public final boolean subgroup;
     public final boolean subgroupBasic;
     public final boolean subgroupArithmetic;
+    public final boolean subgroupClustered;
     public final boolean subgroupQuad;
 
     public final boolean dynamicRendering;
@@ -71,6 +74,8 @@ public final class VkCapabilities {
 
     public final boolean meshShader;
     public final boolean taskShader;
+    /** Real multi-draw-indirect-count. MoltenVK often advertises a 1.2 bit without the COUNT commands. */
+    public final boolean drawIndirectCount;
 
     public final long totalDeviceMemory;
 
@@ -127,6 +132,11 @@ public final class VkCapabilities {
             this.dynamicRendering = features13.dynamicRendering();
             this.hostQueryReset = features12.hostQueryReset();
 
+            boolean hasCountExt = deviceHasExtension(physicalDevice, "VK_KHR_draw_indirect_count");
+            boolean featCount = features12.drawIndirectCount();
+            // Apple + feature-bit-only is MoltenVK mapping Metal indirect draws, not COUNT.
+            this.drawIndirectCount = hasCountExt || (featCount && this.vendorId != 0x106B);
+
             if (meshFeatures != null) {
                 this.meshShader = meshFeatures.meshShader();
                 this.taskShader = meshFeatures.taskShader();
@@ -148,18 +158,33 @@ public final class VkCapabilities {
             this.subgroup = true; // Vulkan 1.1+ always has subgroup support
             this.subgroupBasic = (supportedOps & VK_SUBGROUP_FEATURE_BASIC_BIT) != 0;
             this.subgroupArithmetic = (supportedOps & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
+            this.subgroupClustered = (supportedOps & VK_SUBGROUP_FEATURE_CLUSTERED_BIT) != 0;
             this.subgroupQuad = subgroupProps.quadOperationsInAllStages();
         }
     }
 
+    /** Features required to draw LoDs on the GPU. Int64/clustered are optional fallbacks. */
     public boolean isSystemSupported() {
-        return this.dynamicRendering && this.subgroupBasic && this.shaderInt64;
+        return this.dynamicRendering && this.subgroupBasic;
+    }
+
+    public boolean isAppleGpu() {
+        return this.vendorId == 0x106B;
+    }
+
+    public String vendorLabel() {
+        return switch (this.vendorId) {
+            case 0x10DE -> "NVIDIA";
+            case 0x1002 -> "AMD";
+            case 0x8086 -> "Intel";
+            case 0x106B -> "Apple";
+            default -> "vendor 0x" + Integer.toHexString(this.vendorId);
+        };
     }
 
     public String hardFailureReason() {
         if (!this.dynamicRendering) return "dynamicRendering not supported (needs Vulkan 1.3)";
         if (!this.subgroupBasic) return "subgroupBasic not supported";
-        if (!this.shaderInt64) return "shaderInt64 not supported (needs int64 for mesh/mip)";
         if (this.totalDeviceMemory < (512L << 20)) return "VRAM <512 MiB";
         return null;
     }
@@ -205,8 +230,9 @@ public final class VkCapabilities {
 
     @Override
     public String toString() {
-        return "VkCapabilities{" + this.deviceName + " (" + String.format("0x%04x:0x%04x", this.vendorId, this.deviceId)
+        return "VkCapabilities{" + this.vendorLabel() + " " + this.deviceName + " (" + String.format("0x%04x:0x%04x", this.vendorId, this.deviceId)
                 + "), int64=" + this.shaderInt64 + ", subgroup=" + this.subgroupBasic + "/" + this.subgroupArithmetic
+                + "/" + this.subgroupClustered + ", drawIndirectCount=" + this.drawIndirectCount
                 + ", sparse=" + this.sparseResidencyBuffer + ", mesh=" + this.meshShader
                 + ", dynamicRendering=" + this.dynamicRendering + ", vram=" + (this.totalDeviceMemory >> 20) + "MiB}";
     }

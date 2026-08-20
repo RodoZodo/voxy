@@ -83,7 +83,7 @@ public class VoxyClientInstance extends VoxyInstance {
             Logger.info("Voxy: world engine created without GPU renderer (ingest/save still active)");
             return;
         }
-        Logger.info("Voxy: attaching CPU mesher + Vulkan LoD renderer");
+        Logger.info("Voxy: attaching CPU mesher + Vulkan LoD renderer (LoDs meshed on CPU workers, drawn on GPU)");
         this.modelBakery = new ModelBakerySubsystem(world.getMapper());
         try {
             var mapper = world.getMapper();

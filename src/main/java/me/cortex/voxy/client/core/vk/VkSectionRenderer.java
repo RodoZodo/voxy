@@ -5,10 +5,12 @@ import me.cortex.voxy.client.core.vk.shader.VkPipelineLayout;
 import me.cortex.voxy.client.core.vk.shader.VkShaderCompiler;
 import me.cortex.voxy.client.core.vk.shader.VkShaderModule;
 import me.cortex.voxy.client.core.vk.shader.VkShaderStage;
-import net.minecraft.client.Minecraft;
+import me.cortex.voxy.common.Logger;
 import org.joml.Matrix4f;
 import org.joml.Vector3i;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
+import org.lwjgl.vulkan.VkBufferCopy;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDescriptorBufferInfo;
 import org.lwjgl.vulkan.VkDevice;
@@ -16,7 +18,6 @@ import org.lwjgl.vulkan.VkRect2D;
 import org.lwjgl.vulkan.VkViewport;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
-import java.nio.ByteBuffer;
 import java.util.Map;
 
 import static org.lwjgl.vulkan.KHRDrawIndirectCount.vkCmdDrawIndexedIndirectCountKHR;
@@ -57,16 +58,27 @@ public final class VkSectionRenderer implements AutoCloseable {
     private final VkBuffer modelColourBuffer;
     private final VkTexture atlasTexture;
     private final VkSampler atlasSampler;
+    private final boolean drawIndirectCount;
+    private final VkBuffer hostDrawCountBuffer;
 
     public VkSectionRenderer(VkDevice device, long vma, VkShaderCompiler compiler) {
         this.device = device;
+        var caps = VkContext.INSTANCE.capabilities();
+        this.drawIndirectCount = caps != null && caps.drawIndirectCount;
         this.uniformBuffer = VkBuffer.hostVisible(vma, 1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
         this.drawCallBuffer = VkBuffer.deviceLocal(vma, 12_000_000, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        this.drawCountCallBuffer = VkBuffer.deviceLocal(vma, 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        this.drawCountCallBuffer = VkBuffer.deviceLocal(vma, 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         this.positionScratchBuffer = VkBuffer.deviceLocal(vma, 3_200_000, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         this.distanceCountBuffer = VkBuffer.deviceLocal(vma, 404_096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         this.modelBuffer = VkBuffer.deviceLocal(vma, 64L * 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         this.modelColourBuffer = VkBuffer.deviceLocal(vma, 4L * 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        if (this.drawIndirectCount) {
+            this.hostDrawCountBuffer = null;
+        } else {
+            this.hostDrawCountBuffer = VkBuffer.hostVisible(vma, 32, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            this.hostDrawCountBuffer.mapPersistent();
+            Logger.info("Voxy (Vulkan): LoD draws use vkCmdDrawIndexedIndirect (no drawIndirectCount; typical on MoltenVK/Apple)");
+        }
         var phys = VkContext.INSTANCE.physicalDevice();
         this.atlasTexture = new VkTexture(device, phys, 256, 256, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
         this.atlasSampler = new VkSampler(device);
@@ -316,6 +328,7 @@ public final class VkSectionRenderer implements AutoCloseable {
             vkCmdDispatchIndirect(cb, this.drawCountCallBuffer.handle(), 0);
             VkSync.memoryBarrier(cb);
         }
+        this.snapshotDrawCounts(cb);
     }
 
     public void renderOpaque(VkCommandBuffer cb, int width, int height) {
@@ -339,7 +352,7 @@ public final class VkSectionRenderer implements AutoCloseable {
             vkCmdSetViewport(cb, 0, vp);
             var scissor = VkRect2D.calloc(1, stack); scissor.offset().set(0, 0); scissor.extent().set(width, height);
             vkCmdSetScissor(cb, 0, scissor);
-            vkCmdDrawIndexedIndirectCountKHR(cb, this.drawCallBuffer.handle(), 0, this.drawCountCallBuffer.handle(), 12, 400000, 20);
+            this.drawIndexedIndirect(cb, 0, 12, 400000);
         }
     }
 
@@ -365,8 +378,39 @@ public final class VkSectionRenderer implements AutoCloseable {
             vkCmdSetViewport(cb, 0, vp);
             var scissor = VkRect2D.calloc(1, stack); scissor.offset().set(0, 0); scissor.extent().set(width, height);
             vkCmdSetScissor(cb, 0, scissor);
-            vkCmdDrawIndexedIndirectCountKHR(cb, this.drawCallBuffer.handle(), 400000L*20L, this.drawCountCallBuffer.handle(), 16, 100000, 20);
+            this.drawIndexedIndirect(cb, 400000L * 20L, 16, 100000);
         }
+    }
+
+    private void snapshotDrawCounts(VkCommandBuffer cb) {
+        if (this.drawIndirectCount || this.hostDrawCountBuffer == null) {
+            return;
+        }
+        try (var stack = MemoryStack.stackPush()) {
+            var region = VkBufferCopy.calloc(1, stack);
+            region.get(0).srcOffset(0).dstOffset(0).size(32);
+            vkCmdCopyBuffer(cb, this.drawCountCallBuffer.handle(), this.hostDrawCountBuffer.handle(), region);
+        }
+    }
+
+    private void drawIndexedIndirect(VkCommandBuffer cb, long drawOffset, long countOffset, int maxDraws) {
+        if (this.drawIndirectCount) {
+            vkCmdDrawIndexedIndirectCountKHR(cb, this.drawCallBuffer.handle(), drawOffset,
+                    this.drawCountCallBuffer.handle(), countOffset, maxDraws, 20);
+            return;
+        }
+        int count = 0;
+        if (this.hostDrawCountBuffer != null) {
+            long addr = this.hostDrawCountBuffer.mapPersistent();
+            count = MemoryUtil.memGetInt(addr + countOffset);
+        }
+        if (count <= 0) {
+            return;
+        }
+        if (count > maxDraws) {
+            count = maxDraws;
+        }
+        vkCmdDrawIndexedIndirect(cb, this.drawCallBuffer.handle(), drawOffset, count, 20);
     }
 
     @Override
@@ -396,5 +440,8 @@ public final class VkSectionRenderer implements AutoCloseable {
         this.modelColourBuffer.close();
         this.atlasTexture.close();
         this.atlasSampler.close();
+        if (this.hostDrawCountBuffer != null) {
+            this.hostDrawCountBuffer.close();
+        }
     }
 }

@@ -5,6 +5,7 @@ import me.cortex.voxy.client.core.vk.shader.VkPipelineLayout;
 import me.cortex.voxy.client.core.vk.shader.VkShaderCompiler;
 import me.cortex.voxy.client.core.vk.shader.VkShaderModule;
 import me.cortex.voxy.client.core.vk.shader.VkShaderStage;
+import me.cortex.voxy.common.Logger;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDescriptorBufferInfo;
@@ -78,14 +79,32 @@ public final class VkHiZBuffer implements AutoCloseable {
         }, true);
 
         var init = this.compileStage("hiz_init.comp");
-        var chain = this.compileStage("hiz.comp");
         try {
             this.initPipeline = VkPipelineBuilder.createCompute(device, this.initLayout, init);
-            this.chainPipeline = VkPipelineBuilder.createCompute(device, this.chainLayout, chain);
         } finally {
             init.free(device);
-            chain.free(device);
         }
+
+        // hiz.comp needs GL_KHR_shader_subgroup_clustered. Apple GPUs (MoltenVK) often lack it;
+        // mip0-only occlusion still works for the traverser.
+        long chain = 0L;
+        var caps = VkContext.INSTANCE.capabilities();
+        boolean clustered = caps != null && caps.subgroupClustered && caps.subgroupArithmetic;
+        if (clustered) {
+            try {
+                var chainMod = this.compileStage("hiz.comp");
+                try {
+                    chain = VkPipelineBuilder.createCompute(device, this.chainLayout, chainMod);
+                } finally {
+                    chainMod.free(device);
+                }
+            } catch (Throwable t) {
+                Logger.warn("Voxy (Vulkan): HiZ chain pipeline failed; using mip0-only occlusion", t);
+            }
+        } else {
+            Logger.info("Voxy (Vulkan): HiZ chain skipped (subgroup clustered unavailable); using mip0-only occlusion");
+        }
+        this.chainPipeline = chain;
     }
 
     /**
@@ -126,6 +145,10 @@ public final class VkHiZBuffer implements AutoCloseable {
 
             vkCmdDispatch(cb, (this.width + 255) / 256, this.height, 1);
             VkSync.memoryBarrier(cb);
+
+            if (this.chainPipeline == 0L) {
+                return;
+            }
 
             // ---- chain dispatch: mips 1..6 ----
             this.writeParams(stack, 1.0f / this.width, 1.0f / this.height, 0, 0);
@@ -220,8 +243,12 @@ public final class VkHiZBuffer implements AutoCloseable {
             this.texture.close();
             this.texture = null;
         }
-        vkDestroyPipeline(this.device, this.initPipeline, null);
-        vkDestroyPipeline(this.device, this.chainPipeline, null);
+        if (this.initPipeline != 0L) {
+            vkDestroyPipeline(this.device, this.initPipeline, null);
+        }
+        if (this.chainPipeline != 0L) {
+            vkDestroyPipeline(this.device, this.chainPipeline, null);
+        }
         this.initLayout.close();
         this.chainLayout.close();
         this.sampler.close();

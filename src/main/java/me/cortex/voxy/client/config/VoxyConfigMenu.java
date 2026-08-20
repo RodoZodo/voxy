@@ -2,6 +2,7 @@ package me.cortex.voxy.client.config;
 
 import me.cortex.voxy.client.ClientSessionEvents;
 import me.cortex.voxy.client.config.SodiumConfigBuilder.*;
+import me.cortex.voxy.client.core.vk.VoxyVulkanRenderSystem;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.caffeinemc.mods.sodium.api.config.ConfigEntryPoint;
@@ -36,6 +37,9 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                             instance.updateDedicatedThreads();
                         }
                     }, "voxy:enabled");
+                    postOp.register("voxy:update_render_distance", ()->{
+                        VoxyVulkanRenderSystem.INSTANCE.applyLoDRenderDistance();
+                    });
                 },
                 new Page(Component.translatable("voxy.config.general"),
                         new Group(
@@ -73,6 +77,17 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         ()->!CFG.dontUseSodiumBuilderThreads, v->CFG.dontUseSodiumBuilderThreads=!v)
                                         .setPostChangeFlags("voxy:update_threads")
                         ).setEnabler("voxy:enabled"), new Group(
+                                new BoolOption(
+                                        "voxy:rendering_enabled",
+                                        Component.translatable("voxy.config.general.rendering"),
+                                        ()->CFG.enableRendering, v->CFG.enableRendering=v),
+                                new IntOption(
+                                        "voxy:render_distance",
+                                        Component.translatable("voxy.config.general.renderDistance"),
+                                        CFG::getRenderDistanceChunks, CFG::setRenderDistanceChunks,
+                                        new Range(VoxyConfig.MIN_RENDER_DISTANCE_CHUNKS, VoxyConfig.MAX_RENDER_DISTANCE_CHUNKS, VoxyConfig.RENDER_DISTANCE_STEP_CHUNKS))
+                                        .setFormatter(v -> Component.literal(v + " chunks"))
+                                        .setPostChangeFlags("voxy:update_render_distance"),
                                 new BoolOption(
                                         "voxy:ingest_enabled",
                                         Component.translatable("voxy.config.general.ingest"),

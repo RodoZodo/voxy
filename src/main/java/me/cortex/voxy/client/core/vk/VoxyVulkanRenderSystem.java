@@ -7,7 +7,10 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vulkan.VulkanGpuBuffer;
 import com.mojang.blaze3d.vulkan.VulkanGpuTextureView;
 import com.mojang.blaze3d.vulkan.VulkanRenderPass;
+import me.cortex.voxy.client.VoxyClient;
+import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.model.ModelFactory;
+import me.cortex.voxy.client.core.rendering.RenderDistanceTracker;
 import me.cortex.voxy.client.core.rendering.hierachical.AsyncNodeManager;
 import me.cortex.voxy.client.core.vk.shader.VkPipelineBuilder;
 import me.cortex.voxy.client.core.vk.shader.VkPipelineLayout;
@@ -104,6 +107,7 @@ public final class VoxyVulkanRenderSystem {
 
     //Octree + traversal (created when a world engine comes up)
     private AsyncNodeManager nodeManager;
+    private RenderDistanceTracker renderDistanceTracker;
     private VkNodeCleaner nodeCleaner;
     private VkTraverser traverser;
     private VkSectionGeometryData geometryData;
@@ -169,9 +173,24 @@ public final class VoxyVulkanRenderSystem {
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
             Logger.info("Voxy (Vulkan): init HiZ");
-            this.hiZ = new VkHiZBuffer(this.device, this.compiler);
+            try {
+                this.hiZ = new VkHiZBuffer(this.device, this.compiler);
+            } catch (Throwable t) {
+                this.hiZ = null;
+                Logger.warn("Voxy (Vulkan): HiZ unavailable, occlusion will be skipped", t);
+            }
             Logger.info("Voxy (Vulkan): init LOD generator");
-            this.lodGen = new VkLodGenerator(this.device, this.compiler, this.uploadStream, this.downloadStream, ctx.vmaAllocator());
+            var caps = ctx.capabilities();
+            if (caps != null && !caps.shaderInt64) {
+                Logger.info("Voxy (Vulkan): GPU voxel mip skipped (shaderInt64 missing); CPU mip will be used");
+            } else {
+                try {
+                    this.lodGen = new VkLodGenerator(this.device, this.compiler, this.uploadStream, this.downloadStream, ctx.vmaAllocator());
+                } catch (Throwable t) {
+                    this.lodGen = null;
+                    Logger.warn("Voxy (Vulkan): GPU voxel mip unavailable; CPU mip will be used", t);
+                }
+            }
             //Route LOD (voxel mip) generation through the GPU when supported
             WorldVoxilizedSectionMipper.setMipDispatcher((section, world, mapper, onDone) ->
                     this.lodGen != null && this.lodGen.isGpuSupported() && this.lodGen.submit(section, world, mapper, onDone));
@@ -187,7 +206,9 @@ public final class VoxyVulkanRenderSystem {
             this.initialUploadPending = true;
 
             this.initialized = true;
-            Logger.info("Voxy (Vulkan): GPU mesh.comp pipeline skipped (NVIDIA aborts vkCreateComputePipelines on it); CPU mesher will be used");
+            String vendor = caps != null ? caps.vendorLabel() : "unknown";
+            Logger.info("Voxy (Vulkan): GPU LoDs ready vendor=" + vendor
+                    + " (CPU mesher + GPU draw; mesh.comp skipped — NVIDIA aborts on it)");
         } catch (Throwable e) {
             this.free();
             throw e;
@@ -211,7 +232,8 @@ public final class VoxyVulkanRenderSystem {
         }
         String hiz = this.hiZ == null || this.hiZ.getWidth() == 0 ? "none" : this.hiZ.getWidth() + "x" + this.hiZ.getHeight() + " (" + this.hiZ.getPackedLevels() + ")";
         String traversal = this.traverser == null ? "idle" : "TLN#" + this.traverser.getTopNodeCount() + " half=" + (this.activeHalf ? 1 : 0);
-        return "Vulkan " + this.properties + ", upload=" + (this.uploadStream.getAllocOffset() >> 10) + "KiB, HiZ=" + hiz + ", " + traversal;
+        int chunks = VoxyConfig.CONFIG.getRenderDistanceChunks();
+        return "Vulkan " + this.properties + ", LoD=" + chunks + " chunks, upload=" + (this.uploadStream.getAllocOffset() >> 10) + "KiB, HiZ=" + hiz + ", " + traversal;
     }
 
     public VkMeshGenerator getMeshGenerator() {
@@ -304,8 +326,37 @@ public final class VoxyVulkanRenderSystem {
         if (this.meshGen != null) {
             this.meshGen.setNodeManager(nodeManager);
         }
+        this.createRenderDistanceTracker();
         Logger.info("Voxy (Vulkan): node manager attached cleaner=" + (this.nodeCleaner != null)
-                + " traverser=" + (this.traverser != null) + " renderer=" + (this.sectionRenderer != null));
+                + " traverser=" + (this.traverser != null) + " renderer=" + (this.sectionRenderer != null)
+                + " LoDChunks=" + VoxyConfig.CONFIG.getRenderDistanceChunks());
+    }
+
+    /**
+     * Apply the settings slider (chunks) to the live LoD ring. Original Voxy stores coverage as
+     * {@code sectionRenderDistance} where chunks = that value × 32; the tracker radius is
+     * {@code ceil(sectionRenderDistance + 1)} in LOD-4 section units.
+     */
+    public void applyLoDRenderDistance() {
+        if (this.renderDistanceTracker == null) {
+            return;
+        }
+        float sections = VoxyConfig.CONFIG.sectionRenderDistance;
+        this.renderDistanceTracker.setRenderDistance((int) Math.ceil(sections + 1));
+        Logger.info("Voxy (Vulkan): LoD render distance = " + VoxyConfig.CONFIG.getRenderDistanceChunks() + " chunks");
+    }
+
+    private void createRenderDistanceTracker() {
+        var mc = Minecraft.getInstance();
+        int minSec = -8;
+        int maxSec = 7;
+        if (mc.level != null) {
+            minSec = mc.level.getMinSectionY() >> 5;
+            maxSec = (mc.level.getMaxSectionY() - 1) >> 5;
+        }
+        this.renderDistanceTracker = new RenderDistanceTracker(40, minSec, maxSec,
+                this.nodeManager::addTopLevel, this.nodeManager::removeTopLevel);
+        this.applyLoDRenderDistance();
     }
 
     /** Detach + free the traversal resources (world engine torn down). Runs on the render thread. */
@@ -334,6 +385,7 @@ public final class VoxyVulkanRenderSystem {
             this.geometryData.close();
             this.geometryData = null;
         }
+        this.renderDistanceTracker = null;
         this.nodeManager = null;
     }
 
@@ -384,8 +436,8 @@ public final class VoxyVulkanRenderSystem {
 
         this.recordDemo(cb, camera, width, height);
 
-        // VDIC renderer: opaque + translucent LOD terrain (straight alpha blend for translucent, cull stubbed all-visible)
-        if (this.sectionRenderer != null) {
+        // GPU LoD terrain (CPU-meshed geometry drawn with Vulkan). Original Voxy architecture.
+        if (VoxyConfig.CONFIG.isRenderingEnabled() && this.sectionRenderer != null) {
             try {
                 int w = mc.getWindow().getWidth();
                 int h = mc.getWindow().getHeight();
@@ -425,12 +477,23 @@ public final class VoxyVulkanRenderSystem {
         }
         this.terrainPassActive = false;
 
+        var mc = Minecraft.getInstance();
+        var camera = this.currentCamera();
+        if (this.renderDistanceTracker != null && this.nodeManager != null && camera != null) {
+            if (VoxyClient.isFrexActive()) {
+                while (this.renderDistanceTracker.setCenterAndProcess(camera.pos.x, camera.pos.z)) {
+                    // FREX: drain the whole ring this frame
+                }
+            } else {
+                this.renderDistanceTracker.setCenterAndProcess(camera.pos.x, camera.pos.z);
+            }
+        }
+
         if (this.nodeManager != null && this.traverser != null && this.nodeCleaner != null) {
             this.traverser.ensureFilled(cb);
             this.nodeCleaner.ensureFilled(cb);
         }
 
-        var mc = Minecraft.getInstance();
         if (mc.gameRenderer != null) {
             int w = mc.getWindow().getWidth();
             int h = mc.getWindow().getHeight();
@@ -477,7 +540,6 @@ public final class VoxyVulkanRenderSystem {
         //Post-commit: dispatches that depend on the committed data
         if (this.nodeManager != null && this.traverser != null && this.nodeCleaner != null) {
             this.nodeCleaner.dispatchIdUpdates(cb);
-            var camera = this.currentCamera();
             if (camera != null && this.hiZ != null && this.hiZ.texture() != null) {
                 int w = mc.getWindow().getWidth();
                 int h = mc.getWindow().getHeight();
@@ -486,8 +548,8 @@ public final class VoxyVulkanRenderSystem {
                             this.nodeCleaner.getVisibilityId(), activeHalfOffset, this.nodeCleaner.visibilityBuffer());
                 }
             }
-            // VDIC renderer: build draw calls from the traversal's render list (opaque, cull stubbed)
-            if (this.sectionRenderer != null && this.traverser != null && this.geometryData != null && camera != null) {
+            // GPU LoD draw-call build from the traversal render list
+            if (VoxyConfig.CONFIG.isRenderingEnabled() && this.sectionRenderer != null && this.traverser != null && this.geometryData != null && camera != null) {
                 try {
                     var mvp = new Matrix4f(camera.projectionMatrix).mul(camera.viewRotationMatrix);
                     var basePos = new Vector3i((int) (camera.pos.x) >> 5, (int) (camera.pos.y) >> 5, (int) (camera.pos.z) >> 5);

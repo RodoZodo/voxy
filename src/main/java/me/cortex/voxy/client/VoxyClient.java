@@ -127,8 +127,10 @@ public class VoxyClient implements ClientModInitializer {
     public void onInitializeClient() {
         try {
             System.out.println("[Voxy] client entrypoint lunar=" + isLunarClient()
+                    + " os=" + System.getProperty("os.name") + " arch=" + System.getProperty("os.arch")
                     + " ctx=" + VkContext.INSTANCE);
             Logger.info("Voxy (Vulkan): client entrypoint lunar=" + isLunarClient()
+                    + " os=" + System.getProperty("os.name") + " arch=" + System.getProperty("os.arch")
                     + " ctx=" + VkContext.INSTANCE);
 
             ensureInstanceFactory();

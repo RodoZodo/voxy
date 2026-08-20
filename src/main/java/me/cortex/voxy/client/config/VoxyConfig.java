@@ -18,14 +18,19 @@ public class VoxyConfig {
     private static final Gson GSON = new GsonBuilder()
             .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
             .setPrettyPrinting()
-            .excludeFieldsWithModifiers(Modifier.PRIVATE)
+            .excludeFieldsWithModifiers(Modifier.PRIVATE, Modifier.STATIC)
             .create();
 
     public static VoxyConfig CONFIG = loadOrCreate();
 
+    public static final int MIN_RENDER_DISTANCE_CHUNKS = 128;
+    public static final int MAX_RENDER_DISTANCE_CHUNKS = 2048;
+    public static final int RENDER_DISTANCE_STEP_CHUNKS = 32;
+
     public boolean enabled = true;
     public boolean enableRendering = true;
     public boolean ingestEnabled = true;
+    /** LoD coverage in original Voxy units. GPU uniforms use {@code sectionRenderDistance * 32} chunks. Default 16 = 512 chunks. */
     public float sectionRenderDistance = 16;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
     public float subDivisionSize = 64;
@@ -38,6 +43,7 @@ public class VoxyConfig {
             try (FileReader reader = new FileReader(path.toFile())) {
                 var conf = GSON.fromJson(reader, VoxyConfig.class);
                 if (conf != null) {
+                    conf.clampRenderDistance();
                     conf.save();
                     return conf;
                 } else {
@@ -73,5 +79,24 @@ public class VoxyConfig {
 
     public boolean isRenderingEnabled() {
         return this.enabled && this.enableRendering;
+    }
+
+    /** Voxy LoD render distance in chunks (what the settings slider shows). */
+    public int getRenderDistanceChunks() {
+        return Math.round(this.sectionRenderDistance * 32f);
+    }
+
+    public void setRenderDistanceChunks(int chunks) {
+        int clamped = Math.max(MIN_RENDER_DISTANCE_CHUNKS, Math.min(MAX_RENDER_DISTANCE_CHUNKS, chunks));
+        int snapped = Math.round(clamped / (float) RENDER_DISTANCE_STEP_CHUNKS) * RENDER_DISTANCE_STEP_CHUNKS;
+        snapped = Math.max(MIN_RENDER_DISTANCE_CHUNKS, Math.min(MAX_RENDER_DISTANCE_CHUNKS, snapped));
+        this.sectionRenderDistance = snapped / 32f;
+    }
+
+    private void clampRenderDistance() {
+        int chunks = this.getRenderDistanceChunks();
+        if (chunks < MIN_RENDER_DISTANCE_CHUNKS || chunks > MAX_RENDER_DISTANCE_CHUNKS) {
+            this.setRenderDistanceChunks(chunks);
+        }
     }
 }
