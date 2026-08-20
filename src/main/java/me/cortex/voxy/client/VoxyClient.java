@@ -19,7 +19,7 @@ import java.util.function.Function;
 public class VoxyClient implements ClientModInitializer {
     private static final HashSet<String> FREX = new HashSet<>();
     private static boolean instanceFactorySet;
-    private static boolean rendererBootstrapped;
+    private static boolean gpuInitFailed;
 
     /** Capture only — never compile pipelines. Safe during Minecraft graphics-backend startup. */
     public static void captureRenderer(@Nullable GpuDevice device) {
@@ -58,7 +58,8 @@ public class VoxyClient implements ClientModInitializer {
     }
 
     public static void initVoxyClient() {
-        if (rendererBootstrapped) {
+        ensureInstanceFactory();
+        if (VoxyVulkanRenderSystem.INSTANCE.isInitialized() || gpuInitFailed) {
             return;
         }
         try {
@@ -68,14 +69,10 @@ public class VoxyClient implements ClientModInitializer {
         } catch (Throwable t) {
             return;
         }
-        rendererBootstrapped = true;
-        ensureInstanceFactory();
 
         try {
             var ctx = VkContext.INSTANCE;
             if (!ctx.shouldActivate()) {
-                Logger.warn("Voxy (Vulkan): GPU path disabled - " + ctx.getDeactivationReason());
-                persistVulkanPreference();
                 return;
             }
 
@@ -83,6 +80,7 @@ public class VoxyClient implements ClientModInitializer {
             if (caps != null) {
                 Logger.info("Voxy (Vulkan): detected " + caps);
                 if (!caps.isSystemSupported()) {
+                    gpuInitFailed = true;
                     Logger.error("Voxy (Vulkan): required device features are missing, GPU LoDs disabled. " + caps);
                     return;
                 }
@@ -91,6 +89,7 @@ public class VoxyClient implements ClientModInitializer {
             VoxyVulkanRenderSystem.INSTANCE.init();
             Logger.info("Voxy (Vulkan): render system initialized: " + VoxyVulkanRenderSystem.INSTANCE.describe());
         } catch (Throwable t) {
+            gpuInitFailed = true;
             Logger.warn("Voxy (Vulkan): render system initialization failed, GPU LoDs disabled", t);
         }
     }

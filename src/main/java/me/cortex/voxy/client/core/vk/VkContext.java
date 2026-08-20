@@ -14,6 +14,8 @@ import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.IdentityHashMap;
 
 /**
  * Captures Minecraft's active Vulkan backend (set up in {@code Minecraft.<init>} when the
@@ -31,6 +33,9 @@ public final class VkContext {
 
     private volatile VulkanDevice device;
     private volatile VkCapabilities capabilities;
+    private volatile String lastBackendName = "unknown";
+    private volatile String lastGpuClass = "unknown";
+    private volatile String lastInspectLog;
 
     private VkContext() {
     }
@@ -66,7 +71,9 @@ public final class VkContext {
             return;
         }
         try {
+            this.lastGpuClass = gpu.getClass().getName();
             var info = gpu.getDeviceInfo();
+            this.lastBackendName = info == null || info.backendName() == null ? "unknown" : info.backendName();
             String preferred = "unknown";
             try {
                 var options = Minecraft.getInstance().options;
@@ -75,32 +82,61 @@ public final class VkContext {
                 }
             } catch (Throwable ignored) {
             }
-            Logger.info("Voxy (Vulkan): GpuDevice backend=" + info.backendName()
+            String inspect = "backend=" + this.lastBackendName
                     + " preferred=" + preferred
-                    + " type=" + info.type()
-                    + " renderer=" + info.name()
-                    + " vendor=" + info.vendorName());
-            VulkanDevice found = findVulkanDevice(readBackend(gpu));
-            if (found == null) {
-                found = findVulkanDevice(gpu);
+                    + " type=" + (info == null ? "?" : info.type())
+                    + " renderer=" + (info == null ? "?" : info.name())
+                    + " vendor=" + (info == null ? "?" : info.vendorName())
+                    + " class=" + this.lastGpuClass
+                    + " captured=" + (this.device != null);
+            if (!inspect.equals(this.lastInspectLog)) {
+                this.lastInspectLog = inspect;
+                Logger.info("Voxy (Vulkan): GpuDevice " + inspect);
             }
+
+            VulkanDevice found = findVulkanDeviceDeep(gpu, 0, new IdentityHashMap<>());
             if (found != null) {
                 if (this.device != found) {
                     this.device = null;
                     this.capabilities = null;
                     capture(found);
                 }
-            } else {
-                if (this.device != null) {
-                    Logger.warn("Voxy (Vulkan): active GpuDevice is " + info.backendName()
-                            + ", not Vulkan — dropping captured device");
-                }
-                this.device = null;
-                this.capabilities = null;
+                return;
             }
+
+            if (looksLikeVulkan(this.lastBackendName)) {
+                // Lunar wrappers can hide VulkanDevice behind a delegate. Do not drop a
+                // successful MixinVulkanDevice capture just because unwrap failed this tick.
+                Logger.warn("Voxy (Vulkan): backend is " + this.lastBackendName
+                        + " but VulkanDevice unwrap failed; keeping captured=" + (this.device != null));
+                return;
+            }
+
+            if (this.device != null) {
+                Logger.warn("Voxy (Vulkan): active GpuDevice is " + this.lastBackendName
+                        + ", not Vulkan — dropping captured device");
+            }
+            this.device = null;
+            this.capabilities = null;
         } catch (Throwable t) {
             Logger.warn("Voxy (Vulkan): GpuDevice inspect failed", t);
         }
+    }
+
+    public static boolean looksLikeVulkan(@Nullable String backendName) {
+        if (backendName == null) {
+            return false;
+        }
+        String n = backendName.toLowerCase();
+        return n.contains("vulkan") || n.contains("vk");
+    }
+
+    public String lastBackendName() {
+        return this.lastBackendName;
+    }
+
+    public String lastGpuClass() {
+        return this.lastGpuClass;
     }
 
     @Nullable
@@ -133,25 +169,56 @@ public final class VkContext {
     }
 
     @Nullable
-    private static VulkanDevice findVulkanDevice(Object obj) {
+    private static VulkanDevice findVulkanDeviceDeep(Object obj, int depth, IdentityHashMap<Object, Boolean> seen) {
+        if (obj == null || depth > 6) {
+            return null;
+        }
         if (obj instanceof VulkanDevice vd) {
             return vd;
         }
-        if (obj == null) {
+        if (seen.put(obj, Boolean.TRUE) != null) {
             return null;
         }
-        try {
-            for (Field f : obj.getClass().getDeclaredFields()) {
+        Class<?> type = obj.getClass();
+        String name = type.getName();
+        if (type.isPrimitive() || type.isEnum() || name.startsWith("java.") || name.startsWith("javax.")
+                || name.startsWith("jdk.") || name.startsWith("sun.")) {
+            return null;
+        }
+        if (name.startsWith("net.minecraft.client.Minecraft")
+                || name.contains("ClientLevel")
+                || name.contains("client.gui")
+                || name.contains("TextureManager")) {
+            return null;
+        }
+        if (obj instanceof GpuDevice gpu) {
+            VulkanDevice fromBackend = findVulkanDeviceDeep(readBackend(gpu), depth + 1, seen);
+            if (fromBackend != null) {
+                return fromBackend;
+            }
+        }
+        Class<?> c = type;
+        while (c != null && c != Object.class) {
+            Field[] fields;
+            try {
+                fields = c.getDeclaredFields();
+            } catch (Throwable t) {
+                break;
+            }
+            for (Field f : fields) {
                 try {
+                    if (Modifier.isStatic(f.getModifiers()) || f.getType().isPrimitive()) {
+                        continue;
+                    }
                     f.setAccessible(true);
-                    Object v = f.get(obj);
-                    if (v instanceof VulkanDevice vd) {
-                        return vd;
+                    VulkanDevice found = findVulkanDeviceDeep(f.get(obj), depth + 1, seen);
+                    if (found != null) {
+                        return found;
                     }
                 } catch (Throwable ignored) {
                 }
             }
-        } catch (Throwable ignored) {
+            c = c.getSuperclass();
         }
         return null;
     }
@@ -182,6 +249,10 @@ public final class VkContext {
      */
     public boolean shouldActivate() {
         return this.isVulkanActive();
+    }
+
+    public boolean gpuLooksLikeVulkan() {
+        return this.isVulkanActive() || looksLikeVulkan(this.lastBackendName);
     }
 
     /** @return a human-readable reason for deactivation, or {@code null} when Voxy may run */

@@ -117,6 +117,27 @@ public class VoxyClientInstance extends VoxyInstance {
         return this.nodeManager;
     }
 
+    /** If the world engine started before Vulkan pipelines, wire GPU meshing now. */
+    public void tryAttachRenderer() {
+        if (this.nodeManager != null) {
+            return;
+        }
+        var rs = VoxyVulkanRenderSystem.INSTANCE;
+        if (!rs.isInitialized() || rs.getMeshGenerator() == null) {
+            return;
+        }
+        var level = Minecraft.getInstance().level;
+        if (level == null) {
+            return;
+        }
+        var engine = WorldIdentifier.ofEngine(level);
+        if (engine == null) {
+            return;
+        }
+        Logger.info("Voxy: attaching GPU meshing to existing world engine");
+        this.onWorldEngineCreated(engine);
+    }
+
     public ModelBakerySubsystem getModelBakery() {
         return this.modelBakery;
     }
