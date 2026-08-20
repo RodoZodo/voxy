@@ -47,8 +47,8 @@ public class VoxelIngestService {
                         section.getBiomes(),
                         getLightingSupplier(task)
                 );
-                WorldVoxilizedSectionMipper.mipSection(csec, task.world.getMapper());
-                WorldUpdater.insertUpdate(task.world, csec);
+                WorldVoxilizedSectionMipper.mipSectionOrDispatch(csec, task.world, task.world.getMapper(),
+                        mipped -> WorldUpdater.insertUpdate(task.world, mipped));
             }
         } finally {
             //Release the ref we had acquired for the world

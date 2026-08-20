@@ -1,7 +1,5 @@
 package me.cortex.voxy.client;
 
-import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
-import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.minecraft.client.gui.components.debug.DebugScreenDisplayer;
 import net.minecraft.client.gui.components.debug.DebugScreenEntry;
@@ -25,19 +23,9 @@ public class VoxyDebugScreenEntry implements DebugScreenEntry {
             return;
         }
 
-        VoxyRenderSystem vrs = IVoxyRenderSystemHolder.getNullable();
-
-        //lines.addLineToSection();
+        //TODO(vulkan): render debug info was removed with the GL renderer
         List<String> instanceLines = new ArrayList<>();
         instance.addDebug(instanceLines);
         lines.addToGroup(Identifier.fromNamespaceAndPath("voxy", "instance_debug"), instanceLines);
-
-        if (vrs != null) {
-            List<String> renderLines = new ArrayList<>();
-            vrs.addDebugInfo(renderLines);
-            lines.addToGroup(Identifier.fromNamespaceAndPath("voxy", "render_debug"), renderLines);
-        }
     }
-
-
 }

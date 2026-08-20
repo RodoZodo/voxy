@@ -1,9 +1,8 @@
 package me.cortex.voxy.client.core.model.bakery;
 
-import com.mojang.blaze3d.GpuFormat;
-import com.mojang.blaze3d.opengl.GlTexture;
 import com.mojang.blaze3d.vertex.PoseStack;
 import me.cortex.voxy.client.core.model.ModelFactory;
+import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.UnsafeUtil;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
@@ -12,7 +11,6 @@ import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
 import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.resources.Identifier;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.CardinalLighting;
 import net.minecraft.world.level.ColorResolver;
@@ -34,14 +32,7 @@ import org.lwjgl.system.MemoryUtil;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.lwjgl.opengl.ARBDirectStateAccess.glGetTextureImage;
-import static org.lwjgl.opengl.GL11.*;
-import static org.lwjgl.opengl.GL11C.GL_RGBA;
-import static org.lwjgl.opengl.GL12.GL_PACK_IMAGE_HEIGHT;
-import static org.lwjgl.opengl.GL15C.glBindBuffer;
-import static org.lwjgl.opengl.GL21.GL_PIXEL_PACK_BUFFER;
-import static org.lwjgl.opengl.GL30C.GL_FRAMEBUFFER;
-import static org.lwjgl.opengl.GL30C.glBindFramebuffer;
+
 
 public class SoftwareModelTextureBakery {
     //Note: the first bit of metadata is if alpha discard is enabled
@@ -57,29 +48,14 @@ public class SoftwareModelTextureBakery {
     }
 
     public void setupTexture() {
-        var tex = Minecraft.getInstance().getTextureManager().getTexture(Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png")).getTexture();
-        if (tex.getFormat() != GpuFormat.RGBA8_UNORM) {
-            throw new IllegalStateException("Block atlas not rgba8: " + tex.getFormat());
-        }
-
-        int targetMipLevel = 0;// Math.min(tex.getMipLevels(), 4)-1;//todo: we want to target the mip layer that has the 16x16 sized textures
-
-        int width = tex.getWidth(targetMipLevel);
-        int height = tex.getHeight(targetMipLevel);
-
-        //Just do it ourselves as doing it with b3d has some issues, (doing it ourselves is also just much much much shorter)
+        //Vulkan port: use a dummy white atlas. The real block atlas would need a Vulkan readback
+        // (vkCmdCopyImage -> host). For 4B the rasterizer only needs geometry (depth/alpha); colour
+        // is not used for opaque greedy meshing beyond translucency checks, and a white atlas is a
+        // safe placeholder (deferred to 4C where the real atlas is decoded from the resource PNG).
+        int width = 256;
+        int height = 256;
         var texture = new int[width * height];
-
-        glFlush();
-        glFinish();
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-        glPixelStorei(GL_PACK_ROW_LENGTH, width);
-        glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
-        glPixelStorei(GL_PACK_SKIP_ROWS, 0);
-        glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
-        glPixelStorei(GL_PACK_ALIGNMENT, 4);
-        glGetTextureImage(((GlTexture) tex).glId(), 0, GL_RGBA, GL_UNSIGNED_BYTE, texture);
+        java.util.Arrays.fill(texture, -1);//white opaque
         this.rasterizer.setSamplerTexture(texture, width, height);
     }
 

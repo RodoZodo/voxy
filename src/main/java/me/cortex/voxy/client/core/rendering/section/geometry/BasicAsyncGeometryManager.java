@@ -7,8 +7,9 @@ import me.cortex.voxy.client.core.rendering.building.BuiltSection;
 import me.cortex.voxy.common.util.AllocationArena;
 import me.cortex.voxy.common.util.HierarchicalBitSet;
 import me.cortex.voxy.common.util.MemoryBuffer;
-import org.lwjgl.system.MemoryUtil;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.function.Consumer;
 
 
@@ -150,46 +151,57 @@ public class BasicAsyncGeometryManager implements IGeometryManager {
         return this.invalidatedIds;
     }
 
-    public void writeMetadata(int sectionId, long ptr) {
+    /** Write the 32-byte metadata for a section into the (little-endian) buffer. */
+    public void writeMetadata(int sectionId, ByteBuffer buffer) {
         var sec = this.sectionMetadata.get(sectionId);
         if (sec == null) {
-            //Write nothing
-            MemoryUtil.memSet(ptr, 0, SECTION_METADATA_SIZE);
+            //Write nothing (zeros)
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
+            for (int i = 0; i < SECTION_METADATA_SIZE / 4; i++) {
+                buffer.putInt(0);
+            }
         } else {
-            sec.writeMetadata(ptr);
+            sec.writeMetadata(buffer);
         }
     }
 
-    public void writeMetadataSplit(int sectionId, long ptrA, long ptrB) {
+    /** Write the 32-byte metadata split into two 16-byte (little-endian) buffers. */
+    public void writeMetadataSplit(int sectionId, ByteBuffer bufferA, ByteBuffer bufferB) {
         if (SECTION_METADATA_SIZE != 32) {//This system only works with 32 byte metadata
             throw new IllegalStateException();
         }
         var sec = this.sectionMetadata.get(sectionId);
         if (sec == null) {
-            //Write nothing
-            MemoryUtil.memSet(ptrA, 0, 16);
-            MemoryUtil.memSet(ptrB, 0, 16);
+            //Write nothing (zeros)
+            bufferA.order(ByteOrder.LITTLE_ENDIAN);
+            bufferB.order(ByteOrder.LITTLE_ENDIAN);
+            for (int i = 0; i < 4; i++) {
+                bufferA.putInt(0);
+                bufferB.putInt(0);
+            }
         } else {
-            sec.writeMetadataSplitParts(ptrA, ptrB);
+            sec.writeMetadataSplitParts(bufferA, bufferB);
         }
     }
 
     private record SectionMeta(long position, int aabb, int geometryPtr, int itemCount, int[] offsets, byte childExistence) {
-        public void writeMetadata(long ptr) {
-            this.writeMetadataSplitParts(ptr, ptr+16);
+        public void writeMetadata(ByteBuffer buffer) {
+            this.writeMetadataSplitParts(buffer, buffer.duplicate().position(buffer.position() + 16));
         }
 
-        public void writeMetadataSplitParts(long ptrA, long ptrB) {//First 16 bytes are put into ptrA the remaining 16 bytes are put into ptrB
+        public void writeMetadataSplitParts(ByteBuffer bufferA, ByteBuffer bufferB) {//First 16 bytes are put into ptrA the remaining 16 bytes are put into ptrB
+            bufferA.order(ByteOrder.LITTLE_ENDIAN);
+            bufferB.order(ByteOrder.LITTLE_ENDIAN);
             //Split the long into 2 ints to solve endian issues
-            MemoryUtil.memPutInt(ptrA, (int) (this.position>>32)); ptrA += 4;
-            MemoryUtil.memPutInt(ptrA, (int) this.position); ptrA += 4;
-            MemoryUtil.memPutInt(ptrA, (int) this.aabb); ptrA += 4;
-            MemoryUtil.memPutInt(ptrA, this.geometryPtr + this.offsets[0]); ptrA += 4;
+            bufferA.putInt((int) (this.position >> 32));
+            bufferA.putInt((int) this.position);
+            bufferA.putInt((int) this.aabb);
+            bufferA.putInt(this.geometryPtr + this.offsets[0]);
 
-            MemoryUtil.memPutInt(ptrB, (this.offsets[1]-this.offsets[0])|((this.offsets[2]-this.offsets[1])<<16)); ptrB += 4;
-            MemoryUtil.memPutInt(ptrB, (this.offsets[3]-this.offsets[2])|((this.offsets[4]-this.offsets[3])<<16)); ptrB += 4;
-            MemoryUtil.memPutInt(ptrB, (this.offsets[5]-this.offsets[4])|((this.offsets[6]-this.offsets[5])<<16)); ptrB += 4;
-            MemoryUtil.memPutInt(ptrB, (this.offsets[7]-this.offsets[6])|((this.itemCount -this.offsets[7])<<16)); ptrB += 4;
+            bufferB.putInt((this.offsets[1] - this.offsets[0]) | ((this.offsets[2] - this.offsets[1]) << 16));
+            bufferB.putInt((this.offsets[3] - this.offsets[2]) | ((this.offsets[4] - this.offsets[3]) << 16));
+            bufferB.putInt((this.offsets[5] - this.offsets[4]) | ((this.offsets[6] - this.offsets[5]) << 16));
+            bufferB.putInt((this.offsets[7] - this.offsets[6]) | ((this.itemCount - this.offsets[7]) << 16));
         }
     }
 }

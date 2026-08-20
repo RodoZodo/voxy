@@ -1,7 +1,7 @@
 package me.cortex.voxy.client;
 
-import me.cortex.voxy.client.core.gl.Capabilities;
-import me.cortex.voxy.client.core.rendering.util.SharedIndexBuffer;
+import me.cortex.voxy.client.core.vk.VkContext;
+import me.cortex.voxy.client.core.vk.VoxyVulkanRenderSystem;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.fabricmc.api.ClientModInitializer;
@@ -9,56 +9,45 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.nio.channels.FileLock;
-import java.nio.channels.NonWritableChannelException;
 import java.util.HashSet;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 public class VoxyClient implements ClientModInitializer {
     private static final HashSet<String> FREX = new HashSet<>();
-    private static FileLock EXCLUSIVE_LOCK;
+    private static boolean instanceFactorySet;
+
     public static void initVoxyClient() {
-        Capabilities.init();//Ensure clinit is called
-
-        if (Capabilities.INSTANCE.hasBrokenDepthSampler) {
-            Logger.error("AMD broken depth sampler detected, voxy does not work correctly and has been disabled, this will hopefully be fixed in the future");
+        var ctx = VkContext.INSTANCE;
+        if (!ctx.shouldActivate()) {
+            // Voxy is a Vulkan-only renderer: auto-deactivate with a clear reason.
+            Logger.warn("Voxy (Vulkan): disabled - " + ctx.getDeactivationReason());
+            return;
         }
 
-        boolean systemSupported = Capabilities.INSTANCE.compute && Capabilities.INSTANCE.indirectParameters && !Capabilities.INSTANCE.hasBrokenDepthSampler;
-        if (!systemSupported) {
-             Logger.error("Voxy is unsupported on your system.");
-        }
-
-        if (systemSupported && System.getProperty("voxy.exclusiveLock", "false").equalsIgnoreCase("true")) {
-            //Try acquire the lock file
-            var vf = Minecraft.getInstance().gameDirectory.toPath().resolve(".voxy");
-            if (!vf.toFile().isDirectory()) {
-                vf.toFile().mkdir();
+        var caps = ctx.capabilities();
+        if (caps != null) {
+            Logger.info("Voxy (Vulkan): detected " + caps);
+            if (!caps.isSystemSupported()) {
+                Logger.error("Voxy (Vulkan): required device features are missing, Voxy disabled. " + caps);
+                return;
             }
-            try {
-                FileOutputStream fis = new FileOutputStream(vf.resolve("voxy.lock").toFile());
-                EXCLUSIVE_LOCK = fis.getChannel().lock(0, Long.MAX_VALUE, false);
-            } catch (NonWritableChannelException | IOException e) {
-                //If some error write to log and unsupport
-                Logger.error("Failed to acquire exclusive voxy lock file, mod will be disabled");
-                systemSupported = false;
-            }
-
         }
 
-        if (systemSupported) {
+        try {
+            VoxyVulkanRenderSystem.INSTANCE.init();
+            Logger.info("Voxy (Vulkan): render system initialized: " + VoxyVulkanRenderSystem.INSTANCE.describe());
+        } catch (RuntimeException e) {
+            Logger.error("Voxy (Vulkan): render system initialization failed, Voxy disabled", e);
+            return;
+        }
 
-            SharedIndexBuffer.INSTANCE.id();
-
+        //World engine reactivation: from now on a Voxy instance (CPU octree + ingest) is created
+        // on session start, feeding the GPU traversal.
+        if (!instanceFactorySet) {
+            instanceFactorySet = true;
             VoxyCommon.setInstanceFactory(VoxyClientInstance::new);
-
-            if (!Capabilities.INSTANCE.subgroup) {
-                Logger.warn("GPU does not support subgroup operations, expect some performance degradation");
-            }
-
+            Logger.info("Voxy (Vulkan): world engine reactivated, instance factory registered");
         }
     }
 

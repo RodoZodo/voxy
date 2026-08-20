@@ -380,10 +380,13 @@ public class DHImporter implements IDataImporter {
                             section.lvl0NonAirCount = nonAirCount;
                         }
 
-                        WorldVoxilizedSectionMipper.mipSection(section, this.engine.getMapper());
-
-                        section.setPosition(X*4+(x>>4), sy+(this.bottomOfWorld>>4), (Z*4)+sz);
-                        WorldUpdater.insertUpdate(this.engine, section);
+                        final int fx = x;
+                        final int fsz = sz;
+                        final int fsy = sy;
+                        WorldVoxilizedSectionMipper.mipSectionOrDispatch(section, this.engine, this.engine.getMapper(), mipped -> {
+                        mipped.setPosition(X*4+(fx>>4), fsy+(this.bottomOfWorld>>4), (Z*4)+fsz);
+                        WorldUpdater.insertUpdate(this.engine, mipped);
+                    });
                     }
 
                     int count = this.processedChunks.incrementAndGet();

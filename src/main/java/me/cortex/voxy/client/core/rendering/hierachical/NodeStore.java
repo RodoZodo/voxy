@@ -1,7 +1,8 @@
 package me.cortex.voxy.client.core.rendering.hierachical;
 
 import me.cortex.voxy.common.util.HierarchicalBitSet;
-import org.lwjgl.system.MemoryUtil;
+
+import java.nio.ByteBuffer;
 
 public final class NodeStore {
     public static final int EMPTY_GEOMETRY_ID = -1;
@@ -260,16 +261,17 @@ public final class NodeStore {
         this.localNodeData[idx] = data;
     }
 
-    //Writes out a nodes data to the ptr in the compacted/reduced format
-    public void writeNode(long ptr, int nodeId) {
+    //Writes out a nodes data to the buffer in the compacted/reduced format
+    //The buffer must be little-endian (as the GPU consumes the raw bytes)
+    public void writeNode(ByteBuffer buffer, int nodeId) {
         if (!this.nodeExists(nodeId)) {
-            MemoryUtil.memPutLong(ptr, -1);
-            MemoryUtil.memPutLong(ptr + 8, -1);
+            buffer.putLong(-1L);
+            buffer.putLong(-1L);
             return;
         }
         long pos = this.nodePosition(nodeId);
-        MemoryUtil.memPutInt(ptr, (int) (pos>>32)); ptr += 4;
-        MemoryUtil.memPutInt(ptr, (int) pos); ptr += 4;
+        buffer.putInt((int) (pos>>32));
+        buffer.putInt((int) pos);
 
         int z = 0;
         int w = 0;
@@ -301,8 +303,8 @@ public final class NodeStore {
         z |= (flags&0xFF)<<24;
         w |= ((flags>>8)&0xFF)<<24;
 
-        MemoryUtil.memPutInt(ptr, z); ptr += 4;
-        MemoryUtil.memPutInt(ptr, w); ptr += 4;
+        buffer.putInt(z);
+        buffer.putInt(w);
     }
 
     public int getEndNodeId() {

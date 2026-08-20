@@ -184,7 +184,15 @@ public abstract class VoxyInstance {
         var world = new WorldEngine(this.createStorage(identifier), this);
         world.setSaveCallback(this.savingService::enqueueSave);
         this.activeWorlds.put(identifier, world);
+        this.onWorldEngineCreated(world);
         return world;
+    }
+
+    /**
+     * Hook invoked (inside the active-world write lock) right after a world engine is created.
+     * Subclasses may wire render-side consumers (e.g. the octree node manager).
+     */
+    protected void onWorldEngineCreated(WorldEngine world) {
     }
 
     public void cleanIdle() {

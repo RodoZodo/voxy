@@ -22,7 +22,18 @@ public class ModelBakerySubsystem {
     private volatile Throwable processingThreadException;
     public ModelBakerySubsystem(Mapper mapper) {
         this.mapper = mapper;
-        this.storage = new ModelStore();
+        ModelStore store;
+        try {
+            var ctx = me.cortex.voxy.client.core.vk.VkContext.INSTANCE;
+            if (ctx.isVulkanActive() && ctx.vkDevice() != null && ctx.physicalDevice() != null) {
+                store = new ModelStore(ctx.vmaAllocator(), ctx.vkDevice(), ctx.physicalDevice());
+            } else {
+                store = new ModelStore();
+            }
+        } catch (Exception e) {
+            store = new ModelStore();
+        }
+        this.storage = store;
         this.factory = new ModelFactory(mapper, this.storage);
         this.processingThread = new Thread(()->{//TODO replace this with something good/integrate it into the async processor so that we just have less threads overall
             while (this.isRunning) {

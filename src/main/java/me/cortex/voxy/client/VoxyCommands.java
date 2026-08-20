@@ -6,7 +6,7 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.Suggestions;
 import com.mojang.brigadier.suggestion.SuggestionsBuilder;
-import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
+import me.cortex.voxy.client.core.vk.VoxyVulkanRenderSystem;
 import me.cortex.voxy.common.DebugUtils;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
@@ -67,11 +67,15 @@ public class VoxyCommands {
                                 .executes(ctx->verifyTLNs(ctx, BoolArgumentType.getBool(ctx, "attemptRepair"))))
                 );
 
+        var testmesh = ClientCommands.literal("testmesh")
+                .executes(VoxyCommands::testMesh);
+
         return ClientCommands.literal("voxy")//.requires((ctx)-> VoxyCommon.getInstance() != null)
                 .then(ClientCommands.literal("reload")
                         .executes(VoxyCommands::reloadInstance))
                 .then(imports)
-                .then(debug);
+                .then(debug)
+                .then(testmesh);
     }
 
     private static int reloadInstance(CommandContext<FabricClientCommandSource> ctx) {
@@ -81,11 +85,7 @@ public class VoxyCommands {
             return 1;
         }
 
-        var vrsh = IVoxyRenderSystemHolder.getNullableHolder();
-        if (vrsh!=null) {
-            vrsh.voxy$shutdownRenderer();
-        }
-
+        //TODO(vulkan): renderer shutdown on reload was removed with the GL renderer
         VoxyCommon.shutdownInstance();
         System.gc();
         VoxyCommon.createInstance();
@@ -95,8 +95,20 @@ public class VoxyCommands {
         return 0;
     }
 
-    private static int verifyTLNs(CommandContext<FabricClientCommandSource> ctx, boolean attemptRepair) {
-        var instance = VoxyCommon.getInstance();
+    private static int testMesh(CommandContext<FabricClientCommandSource> ctx) {
+        var instance = (VoxyClientInstance) VoxyCommon.getInstance();
+        if (instance == null || instance.getNodeManager() == null) {
+            ctx.getSource().sendError(Component.translatable("Voxy must be enabled in settings to use this"));
+            return 1;
+        }
+
+        //Push a synthetic solid cube through the GPU greedy mesher; the readback logs the result.
+        VoxyVulkanRenderSystem.INSTANCE.meshTest();
+        ctx.getSource().sendFeedback(Component.literal("GPU mesh test queued; check the log for the result"));
+        return 0;
+    }
+
+    private static int verifyTLNs(CommandContext<FabricClientCommandSource> ctx, boolean attemptRepair) {        var instance = VoxyCommon.getInstance();
         if (instance == null) {
             ctx.getSource().sendError(Component.translatable("Voxy must be enabled in settings to use this"));
             return 1;

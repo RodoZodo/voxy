@@ -1,0 +1,26 @@
+#version 460
+
+layout(local_size_x=128) in;
+
+//Push constants: a = count, b = setTo
+layout(push_constant) uniform PushConstants {
+    uint a;
+    uint b;
+} voxyPC;
+
+layout(binding = VISIBILITY_BUFFER_BINDING, std430) restrict writeonly buffer VisibilityDataBuffer {
+    uint[] visiblity;
+};
+
+layout(binding = LIST_BUFFER_BINDING, std430) restrict readonly buffer SetListBuffer {
+    uint[] ids;
+};
+
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    if (voxyPC.a <= id) {
+        return;
+    }
+    uint pos = ids[id];
+    visiblity[pos&((1u<<31)-1)] = mix(voxyPC.b, uint(-1), (pos&(1u<<31)) == 0);
+}

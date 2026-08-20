@@ -6,17 +6,18 @@ import it.unimi.dsi.fastutil.ints.IntSet;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
-import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.rendering.ISectionWatcher;
 import me.cortex.voxy.client.core.rendering.building.BuiltSection;
 import me.cortex.voxy.client.core.rendering.section.geometry.IGeometryManager;
-import me.cortex.voxy.client.core.rendering.util.UploadStream;
 import me.cortex.voxy.client.core.util.ExpandingObjectAllocationList;
+import me.cortex.voxy.client.core.vk.VkBuffer;
+import me.cortex.voxy.client.core.vk.VkUploadStream;
 import me.cortex.voxy.common.Logger;
-import me.cortex.voxy.common.util.MemoryBuffer;
 import me.cortex.voxy.common.world.WorldEngine;
 import org.lwjgl.system.MemoryUtil;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.List;
 
 import static me.cortex.voxy.common.world.WorldEngine.MAX_LOD_LAYER;
@@ -1354,13 +1355,13 @@ public class NodeManager {
     }
 
     //==================================================================================================================
-    public boolean writeChanges(GlBuffer nodeBuffer) {
+    public boolean writeChanges(VkBuffer nodeBuffer, long bufferOffset, VkUploadStream upload) {
         //TODO: use like compute based copy system or something
         // since microcopies are bad
         if (this.nodeUpdates.isEmpty()) {
             return false;
         }
-        this.nodeUpdates.forEach((int i) -> this.nodeData.writeNode(UploadStream.INSTANCE.upload(nodeBuffer, i*16L, 16L), i));
+        this.nodeUpdates.forEach((int i) -> this.nodeData.writeNode(upload.getWriteBuffer(nodeBuffer, bufferOffset + i*16L, 16L).order(ByteOrder.LITTLE_ENDIAN), i));
         this.nodeUpdates.clear();
         return true;
     }
@@ -1370,23 +1371,27 @@ public class NodeManager {
         return this.nodeUpdates;
     }
 
-    //Used to write a specified node into a specific address (used in async)
-    void writeNode(int node, long address) {
-        this.nodeData.writeNode(address, node);
+    //Used to write a specified node into a given little-endian buffer (used in async)
+    void writeNode(int node, ByteBuffer buffer) {
+        this.nodeData.writeNode(buffer, node);
     }
 
-    public MemoryBuffer _generateChangeList() {
+    //Used to write a specified node into a raw memory address (CPU-thread async sync)
+    void writeNode(int node, long address) {
+        this.nodeData.writeNode(MemoryUtil.memByteBuffer(address, 16).order(ByteOrder.LITTLE_ENDIAN), node);
+    }
+
+    public ByteBuffer _generateChangeList() {
         //For internal testing use only
         if (this.nodeUpdates.isEmpty()) {
             return null;
         }
-        var buff = new MemoryBuffer(this.nodeUpdates.size()*20L);
-        int c = 0;
+        var buff = MemoryUtil.memAlloc(this.nodeUpdates.size()*20).order(ByteOrder.LITTLE_ENDIAN);
         for (int i : this.nodeUpdates) {
-            long addr = buff.address + 20L * c++;
-            MemoryUtil.memPutInt(addr, i);
-            this.nodeData.writeNode(addr+4, i);
+            buff.putInt(i);
+            this.nodeData.writeNode(buff, i);
         }
+        buff.rewind();
         this.nodeUpdates.clear();
         return buff;
     }

@@ -54,6 +54,7 @@ public class Mapper {
 
     private Consumer<StateEntry> newStateCallback;
     private Consumer<BiomeEntry> newBiomeCallback;
+    private long blockRevision;
     public Mapper(IMappingStorage storage) {
         this.storage = storage;
         //Insert air since its a special entry (index 0)
@@ -62,6 +63,29 @@ public class Mapper {
         this.blockId2stateEntry.add(airEntry);
 
         this.loadFromStorage();
+    }
+
+    /**
+     * Snapshot of the opacity (0..15) of every registered block state, indexed by block id.
+     * Used by the GPU LOD generator; consumers should re-fetch when {@link #getBlockRevision()}
+     * changes.
+     */
+    public byte[] getOpacityTable() {
+        var table = new byte[this.blockId2stateEntry.size()];
+        this.blockLock.lock();
+        try {
+            for (int i = 0; i < this.blockId2stateEntry.size(); i++) {
+                table[i] = (byte) this.blockId2stateEntry.get(i).opacity;
+            }
+        } finally {
+            this.blockLock.unlock();
+        }
+        return table;
+    }
+
+    /** Incremented whenever a new block state is registered. */
+    public long getBlockRevision() {
+        return this.blockRevision;
     }
 
 
@@ -191,6 +215,7 @@ public class Mapper {
         entry = new StateEntry(this.blockId2stateEntry.size(), state);
         this.blockId2stateEntry.add(entry);
         this.block2stateEntry.put(state, entry);
+        this.blockRevision++;
         this.blockLock.unlock();
 
         byte[] serialized = entry.serialize();

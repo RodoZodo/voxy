@@ -526,7 +526,7 @@ public class WorldImporter implements IDataImporter {
                 }
         );
 
-        WorldVoxilizedSectionMipper.mipSection(csec, this.world.getMapper());
-        WorldUpdater.insertUpdate(this.world, csec);
+        WorldVoxilizedSectionMipper.mipSectionOrDispatch(csec, this.world, this.world.getMapper(),
+                mipped -> WorldUpdater.insertUpdate(this.world, mipped));
     }
 }

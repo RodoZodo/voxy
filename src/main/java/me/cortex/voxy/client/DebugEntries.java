@@ -1,7 +1,6 @@
 package me.cortex.voxy.client;
 
-import me.cortex.voxy.client.core.IVoxyRenderSystemHolder;
-import me.cortex.voxy.client.core.util.GPUTiming;
+import me.cortex.voxy.client.core.vk.VkContext;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
@@ -24,7 +23,12 @@ public class DebugEntries {
             @Override
             public void display(DebugScreenDisplayer lines, @Nullable Level level, @Nullable LevelChunk levelChunk, @Nullable LevelChunk levelChunk2) {
                 if (!VoxyCommon.isAvailable()) {
-                    lines.addLine(ChatFormatting.RED + "voxy-"+VoxyCommon.MOD_VERSION);//Voxy installed, not avalible
+                    //Voxy inactive: explain why (Vulkan backend missing, or pipeline under construction)
+                    lines.addLine(ChatFormatting.RED + "voxy-" + VoxyCommon.MOD_VERSION + " (disabled)");
+                    var reason = VkContext.INSTANCE.getDeactivationReason();
+                    if (reason != null) {
+                        lines.addLine(ChatFormatting.RED + reason);
+                    }
                     return;
                 }
                 var instance = VoxyCommon.getInstance();
@@ -33,7 +37,7 @@ public class DebugEntries {
                     return;
                 }
                 //Voxy instance active
-                lines.addLine((IVoxyRenderSystemHolder.getNullable()==null?ChatFormatting.DARK_GREEN:ChatFormatting.GREEN)+"voxy-"+VoxyCommon.MOD_VERSION);
+                lines.addLine(ChatFormatting.GREEN + "voxy-" + VoxyCommon.MOD_VERSION);
             }
         });
 
@@ -53,7 +57,7 @@ public class DebugEntries {
         if ((entry!=DebugScreenEntryStatus.NEVER)!=previousGpuDebugEnabled) {
             previousGpuDebugEnabled ^= true;
 
-            GPUTiming.INSTANCE.setEnabled(previousGpuDebugEnabled);
+            //TODO(vulkan): GPU timing toggle was removed with the GL renderer
             RenderStatistics.enabled = previousGpuDebugEnabled;
             var renderer = Minecraft.getInstance().levelExtractor;
             if (renderer!=null)renderer.allChanged();

@@ -1,9 +1,45 @@
 package me.cortex.voxy.common.voxelization;
 
+import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.other.Mapper;
+
+import java.util.function.Consumer;
 import me.cortex.voxy.common.world.other.Mipper;
 
 public class WorldVoxilizedSectionMipper {
+    /**
+     * Optional GPU-accelerated mip dispatcher (registered by the client render backend).
+     * When present, {@link #mipSectionOrDispatch} hands the section to it; the dispatcher is
+     * responsible for computing the mips and invoking {@code onDone} with the (possibly owned
+     * copy of the) section on the completing thread. The dispatcher returns {@code true} if it
+     * accepted the job, {@code false} if the caller should fall back to the synchronous CPU path.
+     */
+    @FunctionalInterface
+    public interface MipDispatcher {
+        boolean dispatch(VoxelizedSection section, WorldEngine world, Mapper mapper, Consumer<VoxelizedSection> onDone);
+    }
+
+    private static volatile MipDispatcher mipDispatcher;
+
+    public static void setMipDispatcher(MipDispatcher dispatcher) {
+        mipDispatcher = dispatcher;
+    }
+
+    /**
+     * Compute the section's mips, either on the GPU (via the registered dispatcher, asynchronous)
+     * or on the CPU (synchronous). In both cases {@code onDone} runs exactly once after the mips
+     * are complete and the section is ready for insertion into the world; the section passed to
+     * {@code onDone} may be an owned copy (GPU path), so callers must use the provided section.
+     */
+    public static void mipSectionOrDispatch(VoxelizedSection section, WorldEngine world, Mapper mapper, Consumer<VoxelizedSection> onDone) {
+        var dispatcher = mipDispatcher;
+        if (dispatcher != null && dispatcher.dispatch(section, world, mapper, onDone)) {
+            return;
+        }
+        mipSection(section, mapper);
+        onDone.accept(section);
+    }
+
     private static int G(int x, int y, int z) {
         return ((y<<8)|(z<<4)|x);
     }

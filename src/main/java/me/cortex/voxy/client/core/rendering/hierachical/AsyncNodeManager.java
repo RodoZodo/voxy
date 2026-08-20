@@ -1,43 +1,38 @@
 package me.cortex.voxy.client.core.rendering.hierachical;
 
 import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntConsumer;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import me.cortex.voxy.client.TimingStatistics;
-import me.cortex.voxy.client.core.gl.GlBuffer;
-import me.cortex.voxy.client.core.gl.shader.Shader;
-import me.cortex.voxy.client.core.gl.shader.ShaderType;
 import me.cortex.voxy.client.core.rendering.GeometryCache;
 import me.cortex.voxy.client.core.rendering.SectionUpdateRouter;
 import me.cortex.voxy.client.core.rendering.building.BuiltSection;
-import me.cortex.voxy.client.core.rendering.building.RenderGenerationService;
 import me.cortex.voxy.client.core.rendering.section.geometry.BasicAsyncGeometryManager;
-import me.cortex.voxy.client.core.rendering.section.geometry.BasicSectionGeometryData;
-import me.cortex.voxy.client.core.rendering.section.geometry.IGeometryData;
-import me.cortex.voxy.client.core.rendering.util.UploadStream;
+import me.cortex.voxy.client.core.vk.VkBuffer;
+import me.cortex.voxy.client.core.vk.VkNodeCleaner;
+import me.cortex.voxy.client.core.vk.VkSectionGeometryData;
+import me.cortex.voxy.client.core.vk.VkUploadStream;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.AllocationArena;
 import me.cortex.voxy.common.util.MemoryBuffer;
-import me.cortex.voxy.common.util.UnsafeUtil;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldSection;
 import me.cortex.voxy.commonImpl.VoxyCommon;
+import org.jetbrains.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.StampedLock;
-
-import static org.lwjgl.opengl.ARBUniformBufferObject.glBindBufferBase;
-import static org.lwjgl.opengl.GL30C.glUniform1ui;
-import static org.lwjgl.opengl.GL42C.GL_UNIFORM_BARRIER_BIT;
-import static org.lwjgl.opengl.GL42C.glMemoryBarrier;
-import static org.lwjgl.opengl.GL43C.*;
+import java.util.function.Consumer;
 
 //TODO: create an "async upload stream", that is, the upload stream is a raw mapped buffer pointer that can be written to
 // which is then synced to the gpu on "render thread sync",
@@ -68,7 +63,6 @@ public class AsyncNodeManager {
 
     private final NodeManager manager;
     private final BasicAsyncGeometryManager geometryManager;
-    private final IGeometryData geometryData;
     private final SectionUpdateRouter router;
 
     private final GeometryCache geometryCache = new GeometryCache(1L<<32);
@@ -86,13 +80,12 @@ public class AsyncNodeManager {
 
     private boolean needsWaitForSync = false;
 
-    public AsyncNodeManager(int maxNodeCount, IGeometryData geometryData, RenderGenerationService renderService) {
+    public AsyncNodeManager(int maxNodeCount, BasicAsyncGeometryManager geometryManager, @Nullable Consumer<Long> meshRequestConsumer) {
         //Note the current implmentation of ISectionWatcher is threadsafe
-        //Note: geometry data is the data store/source, not the management, it is just a raw store of data
-        // it MUST ONLY be accessed on the render thread
-        // AsyncNodeManager will use an AsyncGeometryManager as the manager for the data store, and sync the results on the render thread
-        this.geometryData = geometryData;
-        this.geometryCapacity = ((BasicSectionGeometryData)geometryData).getGeometryCapacityBytes();
+        //Geometry is managed by the IGeometryManager on the render thread; this phase has no meshing
+        // so the manager is typically a no-op, with real meshing arriving in a later phase.
+        this.geometryManager = geometryManager;
+        this.geometryCapacity = geometryManager.getGeometryCapacityBytes();
 
         this.maxNodeCount = maxNodeCount;
 
@@ -115,20 +108,21 @@ public class AsyncNodeManager {
         });
         this.thread.setName("Async Node Manager");
 
-        this.geometryManager = new BasicAsyncGeometryManager(((BasicSectionGeometryData)geometryData).getMaxSectionCount(), this.geometryCapacity);
-
         this.router = new SectionUpdateRouter();
         this.router.setCallbacks(pos->{//On initial render gen, try get from geometry cache
             var cachedGeometry = this.geometryCache.remove(pos);
             if (cachedGeometry != null) {//Use the cached geometry
                 this.submitGeometryResult(cachedGeometry);
-            } else {//Else we need to request it
-                renderService.enqueueTask(pos);
+            } else if (meshRequestConsumer != null) {//Else we need to request it
+                meshRequestConsumer.accept(pos);
             }
-        }, renderService::enqueueTask, this::submitChildChange);
-        renderService.setResultConsumer(this::submitGeometryResult);
+        }, pos -> {
+            if (meshRequestConsumer != null) {
+                meshRequestConsumer.accept(pos);
+            }
+        }, this::submitChildChange);
 
-        this.manager = new NodeManager(maxNodeCount, this.geometryManager, this.router);
+        this.manager = new NodeManager(maxNodeCount, geometryManager, this.router);
 
         //Dont do the move... is just to much effort
         this.manager.setClear(new NodeManager.ICleaner() {
@@ -176,20 +170,6 @@ public class AsyncNodeManager {
         resultSet.reset();
         return resultSet;
     }
-
-    private final Shader scatterWrite = Shader.make()
-            .define("INPUT_BUFFER_BINDING", 0)
-            .define("OUTPUT_BUFFER1_BINDING", 1)
-            .define("OUTPUT_BUFFER2_BINDING", 2)
-            .add(ShaderType.COMPUTE, "voxy:util/scatter.comp")
-            .compile();
-
-    private final Shader multiMemcpy = Shader.make()
-            .define("INPUT_HEADER_BUFFER_BINDING", 0)
-            .define("INPUT_DATA_BUFFER_BINDING", 1)
-            .define("OUTPUT_BUFFER_BINDING", 2)
-            .add(ShaderType.COMPUTE, "voxy:util/memcpy.comp")
-            .compile();
 
     private void run() {
         if (this.workCounter.get() <= 0) {
@@ -274,6 +254,14 @@ public class AsyncNodeManager {
             }
         }
 
+        while (true) {//Process direct (debug/test) geometry uploads on this thread
+            var job = this.directGeometryUploadQueue.poll();
+            if (job == null)
+                break;
+            workDone++;
+            this.geometryManager.uploadSection(job);
+        }
+
         while (true) {//Process all request batches
             var job = this.requestBatchQueue.poll();
             if (job == null)
@@ -301,7 +289,7 @@ public class AsyncNodeManager {
             workDone++;
             long ptr = job.address;
             int zeroCount = 0;
-            for (int i = 0; i < NodeCleaner.OUTPUT_COUNT; i++) {
+            for (int i = 0; i < VkNodeCleaner.OUTPUT_COUNT; i++) {
                 long pos = ((long) MemoryUtil.memGetInt(ptr)) << 32; ptr += 4;
                 pos |= Integer.toUnsignedLong(MemoryUtil.memGetInt(ptr)); ptr += 4;
 
@@ -399,17 +387,19 @@ public class AsyncNodeManager {
             results.tlnDelta.addAll(this.tlnIdChange);
             this.tlnIdChange.clear();
 
-            if (!this.geometryManager.getUploads().isEmpty()){//Put in new data into sync set
+            //Collect geometry uploads (heap quad data -> GPU geometry buffer)
+            if (!this.geometryManager.getUploads().isEmpty()) {
                 var iter = this.geometryManager.getUploads().int2ObjectEntrySet().fastIterator();
                 while (iter.hasNext()) {
                     var val = iter.next();
                     results.geometryUpload.upload(val.getIntKey(), val.getValue());
-                    val.getValue().free();
+                    val.getValue().free();//Ownership transferred; the GPU side has copied it out
                 }
                 this.geometryManager.getUploads().clear();
             }
+            this.geometryManager.getHeapRemovals().clear();//No pending removals for a fresh result set
+            this.collectMetadataUpdates(results);
 
-            this.geometryManager.getHeapRemovals().clear();//We dont do removals on new data (as there is "none")
             results.cleanerOperations.addAll(this.cleanerIdResetClear); this.cleanerIdResetClear.clear();
         } else {
             results = prev;
@@ -436,7 +426,7 @@ public class AsyncNodeManager {
                 this.cleanerIdResetClear.clear();
             }
 
-            if (!this.geometryManager.getHeapRemovals().isEmpty()) {//Remove and free all the removed geometry uploads
+            if (!this.geometryManager.getHeapRemovals().isEmpty()) {//Remove + drop any pending geometry uploads for freed heap regions
                 var rem = this.geometryManager.getHeapRemovals();
                 var iter = rem.intIterator();
                 while (iter.hasNext()) {
@@ -445,37 +435,21 @@ public class AsyncNodeManager {
                 rem.clear();
             }
 
-            if (!this.geometryManager.getUploads().isEmpty()) {//Add all the new uploads to the result set
+            if (!this.geometryManager.getUploads().isEmpty()) {//Add all new geometry uploads to the result set
                 var add = this.geometryManager.getUploads();
                 var iter = add.int2ObjectEntrySet().fastIterator();
                 while (iter.hasNext()) {
                     var val = iter.next();
                     results.geometryUpload.upload(val.getIntKey(), val.getValue());
-                    val.getValue().free();
+                    val.getValue().free();//Ownership transferred; the GPU side has copied it out
                 }
                 add.clear();
             }
+
+            this.collectMetadataUpdates(results);
         }
 
         {//This is the same regardless of if is a merge or new result
-            //Geometry id metadata updates
-            if (!this.geometryManager.getUpdateIds().isEmpty()) {
-                var ids = this.geometryManager.getUpdateIds();
-                var iter = ids.intIterator();
-                while (iter.hasNext()) {
-                    int val = iter.nextInt();
-                    int scatterAddr = (val<<1)|(1<<31);//Since we write to the second buffer
-
-                    //Geometry buffer is index of 1, so mutate to put it in that location, it is also 32 bytes, so needs to be split into 2 separate scatter writes
-                    long ptrA = results.getScatterWritePtr(scatterAddr+0, 1);
-                    long ptrB = results.getScatterWritePtr(scatterAddr+1, 0);
-
-                    //Write update data
-                    this.geometryManager.writeMetadataSplit(val, ptrA, ptrB);
-                }
-                ids.clear();
-            }
-
             //Node updates
             if (!this.manager.getNodeUpdates().isEmpty()) {
                 var ids = this.manager.getNodeUpdates();
@@ -509,9 +483,26 @@ public class AsyncNodeManager {
         }
     }
 
+    /** Snapshot the pending section metadata rewrites (32 bytes per id) into the result set. */
+    private void collectMetadataUpdates(SyncResults results) {
+        if (this.geometryManager.getUpdateIds().isEmpty()) {
+            return;
+        }
+        var ids = this.geometryManager.getUpdateIds();
+        var iter = ids.intIterator();
+        while (iter.hasNext()) {
+            int val = iter.nextInt();
+            byte[] meta = new byte[32];
+            this.geometryManager.writeMetadata(val, ByteBuffer.wrap(meta).order(ByteOrder.LITTLE_ENDIAN));
+            results.metadataUpdates.put(val, meta);
+        }
+        ids.clear();
+    }
+
     private IntConsumer tlnAddCallback; private IntConsumer tlnRemoveCallback;
     //Render thread synchronization
-    public void tick(GlBuffer nodeBuffer, NodeCleaner cleaner) {//TODO: dont pass nodeBuffer here??, do something else thats better
+    public void tick(VkBuffer nodeBuffer, VkNodeCleaner cleaner, VkUploadStream upload, int halfNodeCount, boolean activeHalf,
+                     @Nullable VkSectionGeometryData geometryData) {//TODO: dont pass nodeBuffer here??, do something else thats better
         if (this.uncaughtException != null) {
             throw new RuntimeException(this.uncaughtException);//Propagate internal exception
         }
@@ -534,65 +525,69 @@ public class AsyncNodeManager {
             //Dont need to clear as is not used again
         }
 
-        {//Update basic geometry data
-            var store = (BasicSectionGeometryData)this.geometryData;
-
-            store.setSectionCount(results.geometrySectionCount);
-
-            var upload = results.geometryUpload;
-            if (!upload.dataUploadPoints.isEmpty()) {
-                ((BasicSectionGeometryData)this.geometryData).ensureAccessable(upload.maxElementAccess);
-                TimingStatistics.A.start();
-
-                int copies = upload.dataUploadPoints.size();
-                int upCopies = UploadStream.alignUpAlloc(copies*16);
-                int scratchSize = (int) upload.arena.getSize() * 8;
-                int upScratchSize = UploadStream.alignUpAlloc(scratchSize);
-                long ptr = UploadStream.INSTANCE.rawUploadAddress(upScratchSize + upCopies);
-                UnsafeUtil.memcpy(upload.scratchHeaderBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr, copies * 16L);
-                UnsafeUtil.memcpy(upload.scratchDataBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr + upCopies, scratchSize);
-                UploadStream.INSTANCE.commit();//Commit the buffer
-
-                this.multiMemcpy.bind();
-                glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, UploadStream.INSTANCE.getRawBufferId(), ptr, upCopies);
-                glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, UploadStream.INSTANCE.getRawBufferId(), ptr+upCopies, upScratchSize);
-                glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ((BasicSectionGeometryData) this.geometryData).getGeometryBuffer().id);
-
-                if (copies > 500) {
-                    Logger.warn("Large amount of copies, lag will probably happen: " + copies);
+        {//Apply geometry data: copy quads into the geometry buffer + rewrite section metadata
+            if (geometryData != null) {
+                var uploads = results.geometryUpload;
+                if (!uploads.dataUploadPoints.isEmpty()) {
+                    TimingStatistics.A.start();
+                    int copies = uploads.dataUploadPoints.size();
+                    if (copies > 500) {
+                        Logger.warn("Large amount of copies, lag will probably happen: " + copies);
+                    }
+                    var header = uploads.scratchHeaderBuffer;
+                    var data = uploads.scratchDataBuffer;
+                    for (int h = 0; h < copies; h++) {
+                        long headerPtr = header.address + h * 16L;
+                        int alloc = MemoryUtil.memGetInt(headerPtr);
+                        int point = MemoryUtil.memGetInt(headerPtr + 4L);
+                        int size = MemoryUtil.memGetInt(headerPtr + 8L);
+                        long srcBytes = Integer.toUnsignedLong(alloc) * 8L;
+                        long dstBytes = Integer.toUnsignedLong(point) * 8L;
+                        long bytes = Integer.toUnsignedLong(size) * 8L;
+                        var bb = upload.getWriteBuffer(geometryData.geometryBuffer(), dstBytes, bytes).order(ByteOrder.LITTLE_ENDIAN);
+                        MemoryUtil.memCopy(data.address + srcBytes, MemoryUtil.memAddress(bb), bytes);
+                    }
+                    TimingStatistics.A.stop();
                 }
 
-                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
-                glDispatchCompute(copies, 1, 1);//Execute the copies
-                glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+                if (!results.metadataUpdates.isEmpty()) {
+                    for (var e : results.metadataUpdates.int2ObjectEntrySet()) {
+                        int id = e.getIntKey();
+                        byte[] meta = e.getValue();
+                        var bb = upload.getWriteBuffer(geometryData.metadataBuffer(), id * 32L, 32).order(ByteOrder.LITTLE_ENDIAN);
+                        bb.put(meta);
+                    }
+                }
 
-                TimingStatistics.A.stop();
+                geometryData.setSectionCount(results.geometrySectionCount);
             }
         }
 
         TimingStatistics.B.start();
         if (!results.scatterWriteLocationMap.isEmpty()) {//Scatter write
-            int count = results.scatterWriteLocationMap.size();//Number of writes, not chunks or uvec4 count
-            int chunks = (count+3)/4;
-            int streamSize = chunks*80;//80 bytes per chunk, it is guaranteed the buffer is big enough
-            long ptr = UploadStream.INSTANCE.rawUploadAddress(streamSize);//Internally implicitly aligned alloc
-            MemoryUtil.memCopy(results.scatterWriteBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr, streamSize);
-            UploadStream.INSTANCE.commit();//Commit the buffer
-
-            this.scatterWrite.bind();
-            glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, UploadStream.INSTANCE.getRawBufferId(), ptr, UploadStream.alignUpAlloc(streamSize));
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, nodeBuffer.id);
-            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ((BasicSectionGeometryData) this.geometryData).getMetadataBuffer().id);
-            glUniform1ui(0, count);
-            glMemoryBarrier(GL_UNIFORM_BARRIER_BIT|GL_SHADER_STORAGE_BARRIER_BIT);
-            glDispatchCompute((count+127)/128, 1, 1);
-            glMemoryBarrier(GL_UNIFORM_BARRIER_BIT|GL_SHADER_STORAGE_BARRIER_BIT);
+            int count = results.scatterWriteLocationMap.size();
+            //Node data updates go to the inactive half of the double-buffered node array so the
+            //in-flight traversal never reads torn data.
+            long inactiveBase = activeHalf ? 0L : halfNodeCount;
+            var buf = results.scatterWriteBuffer;
+            for (int e = 0; e < count; e++) {
+                int chunkBase = (e >> 2) * 5;
+                int innerId = e & 3;
+                int location = MemoryUtil.memGetInt(buf.address + (chunkBase * 16L) + (innerId * 4L));
+                long dataPtr = buf.address + ((chunkBase + 1 + innerId) * 16L);
+                if ((location & 0x80000000) != 0) {
+                    //Geometry metadata writes now go through results.metadataUpdates (copy regions)
+                    continue;
+                }
+                var bb = upload.getWriteBuffer(nodeBuffer, (inactiveBase + location) * 16L, 16L).order(ByteOrder.LITTLE_ENDIAN);
+                bb.putLong(MemoryUtil.memGetLong(dataPtr)).putLong(MemoryUtil.memGetLong(dataPtr + 8));
+            }
         }
         TimingStatistics.B.stop();
 
         TimingStatistics.C.start();
         if (!results.cleanerOperations.isEmpty()) {
-            cleaner.updateIds(results.cleanerOperations);
+            cleaner.collectIds(results.cleanerOperations);
         }
         TimingStatistics.C.stop();
 
@@ -636,6 +631,7 @@ public class AsyncNodeManager {
     private final ConcurrentLinkedDeque<MemoryBuffer> requestBatchQueue = new ConcurrentLinkedDeque<>();
     private final ConcurrentLinkedDeque<WorldSection> childUpdateQueue = new ConcurrentLinkedDeque<>();
     private final ConcurrentLinkedDeque<BuiltSection> geometryUpdateQueue = new ConcurrentLinkedDeque<>();
+    private final ConcurrentLinkedDeque<BuiltSection> directGeometryUploadQueue = new ConcurrentLinkedDeque<>();
 
     private final ConcurrentLinkedDeque<MemoryBuffer> removeBatchQueue = new ConcurrentLinkedDeque<>();
 
@@ -669,12 +665,25 @@ public class AsyncNodeManager {
         this.addWork();
     }
 
-    private void submitGeometryResult(BuiltSection geometry) {
+    public void submitGeometryResult(BuiltSection geometry) {
         if (!this.running) {
             geometry.free();
             return;
         }
         this.geometryUpdateQueue.add(geometry);
+        this.addWork();
+    }
+
+    /**
+     * Enqueue a geometry upload that bypasses the octree node mapping (debug/test only); the
+     * section is uploaded on the async thread and flows through the normal GPU data path.
+     */
+    public void submitDirectGeometryUpload(BuiltSection geometry) {
+        if (!this.running) {
+            geometry.free();
+            return;
+        }
+        this.directGeometryUploadQueue.add(geometry);
         this.addWork();
     }
 
@@ -757,6 +766,12 @@ public class AsyncNodeManager {
         }
 
         while (true) {
+            var buffer = this.directGeometryUploadQueue.poll();
+            if (buffer == null) break;
+            buffer.free();
+        }
+
+        while (true) {
             var section = this.childUpdateQueue.poll();
             if (section == null) break;
             section.release();
@@ -780,13 +795,11 @@ public class AsyncNodeManager {
             result.scatterWriteBuffer.free();
         }
 
-        this.scatterWrite.free();
-        this.multiMemcpy.free();
         this.geometryCache.free();
     }
 
     public void addDebug(List<String> debug) {
-        debug.add("UC/GC,#N: " + (this.getUsedGeometryCapacity()/(1<<20))+"/"+(this.getGeometryCapacity()/(1<<20)) + "," + (this.geometryData.getSectionCount()));
+        debug.add("UC/GC,#N: " + (this.getUsedGeometryCapacity()/(1<<20))+"/"+(this.getGeometryCapacity()/(1<<20)) + "," + (this.geometryManager.getSectionCount()));
         //debug.add("GUQ/NRC: " + this.geometryUpdateQueue.size()+"/"+this.removeBatchQueue.size());
     }
 
@@ -829,9 +842,8 @@ public class AsyncNodeManager {
         private long usedGeometry;
         private final ComputeMemoryCopy geometryUpload = new ComputeMemoryCopy();
 
-        //Gpu geometry downloads
-
-
+        //Section metadata rewrites (32 bytes per id) -> geometry metadata buffer
+        private final Int2ObjectOpenHashMap<byte[]> metadataUpdates = new Int2ObjectOpenHashMap<>();
 
         //Scatter writes for both geometry and node metadata
         private MemoryBuffer scatterWriteBuffer = new MemoryBuffer(8192*2);
@@ -844,6 +856,7 @@ public class AsyncNodeManager {
         public void reset() {
             this.cleanerOperations.clear();
             this.scatterWriteLocationMap.clear();
+            this.metadataUpdates.clear();
             this.currentMaxNodeId = 0;
             this.tlnDelta.clear();
             this.geometrySectionCount = 0;

@@ -1,0 +1,22 @@
+#version 450
+
+//Downsample the vanilla depth texture into the pow2 R32F mip_0 that hiz.comp consumes.
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depth;
+layout(set = 0, binding = 1, r32f) uniform restrict writeonly image2D mip0;
+
+layout(set = 0, binding = 2) uniform InitParams {
+    vec2 invImSize;
+    ivec2 mip0Size;
+} params;
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    if (pos.x >= params.mip0Size.x || pos.y >= params.mip0Size.y) {
+        return;
+    }
+    vec2 uv = (vec2(pos) + 0.5) * params.invImSize;
+    imageStore(mip0, pos, vec4(texture(depth, uv).r));
+}
