@@ -85,6 +85,9 @@ public final class GpuMeshService {
 
     /** Called on the render thread at splice-2 (pre-commit). Drains a budget of tasks. */
     public void drain() {
+        if (this.generator == null) {
+            return;
+        }
         for (int i = 0; i < BUDGET_PER_DRAIN; i++) {
             MeshTask task = this.queue.poll();
             if (task == null) {

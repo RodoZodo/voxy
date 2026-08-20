@@ -23,7 +23,6 @@ public class DebugEntries {
             @Override
             public void display(DebugScreenDisplayer lines, @Nullable Level level, @Nullable LevelChunk levelChunk, @Nullable LevelChunk levelChunk2) {
                 if (!VoxyCommon.isAvailable()) {
-                    //Voxy inactive: explain why (Vulkan backend missing, or pipeline under construction)
                     lines.addLine(ChatFormatting.RED + "voxy-" + VoxyCommon.MOD_VERSION + " (disabled)");
                     var reason = VkContext.INSTANCE.getDeactivationReason();
                     if (reason != null) {
@@ -33,11 +32,12 @@ public class DebugEntries {
                 }
                 var instance = VoxyCommon.getInstance();
                 if (instance == null) {
-                    lines.addLine(ChatFormatting.YELLOW + "voxy-" + VoxyCommon.MOD_VERSION);//Voxy avalible, no instance active
+                    lines.addLine(ChatFormatting.YELLOW + "voxy-" + VoxyCommon.MOD_VERSION + " (idle)");
                     return;
                 }
-                //Voxy instance active
-                lines.addLine(ChatFormatting.GREEN + "voxy-" + VoxyCommon.MOD_VERSION);
+                lines.addLine(ChatFormatting.GREEN + "voxy-" + VoxyCommon.MOD_VERSION
+                        + " ingest=" + ClientChunkIngest.ingestedCount()
+                        + " q=" + instance.getIngestService().getTaskCount());
             }
         });
 

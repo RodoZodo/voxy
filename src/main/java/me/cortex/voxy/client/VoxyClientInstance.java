@@ -79,6 +79,10 @@ public class VoxyClientInstance extends VoxyInstance {
             this.teardownNodeManager();
         }
         var rs = VoxyVulkanRenderSystem.INSTANCE;
+        if (!rs.isInitialized() || rs.getMeshGenerator() == null) {
+            Logger.info("Voxy: world engine created without GPU meshing (ingest/save still active)");
+            return;
+        }
         //Model baking subsystem (CPU) - provides idMappings/metadataCache for the GPU mesher
         this.modelBakery = new ModelBakerySubsystem(world.getMapper());
         //Seed biome entries and register callback for future biomes

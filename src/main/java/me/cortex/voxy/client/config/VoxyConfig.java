@@ -6,7 +6,6 @@ import com.google.gson.GsonBuilder;
 import com.google.gson.JsonParseException;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
-import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.FileReader;
@@ -34,43 +33,31 @@ public class VoxyConfig {
 
 
     private static VoxyConfig loadOrCreate() {
-        if (VoxyCommon.isAvailable()) {
-            var path = getConfigPath();
-            if (Files.exists(path)) {
-                try (FileReader reader = new FileReader(path.toFile())) {
-                    var conf = GSON.fromJson(reader, VoxyConfig.class);
-                    if (conf != null) {
-                        conf.save();
-                        return conf;
-                    } else {
-                        Logger.error("Failed to load voxy config, resetting");
-                    }
-                } catch (IOException e) {
-                    Logger.error("Could not load config", e);
-                } catch (JsonParseException e) {
-                    Logger.error("Could not parse config", e);
+        var path = getConfigPath();
+        if (Files.exists(path)) {
+            try (FileReader reader = new FileReader(path.toFile())) {
+                var conf = GSON.fromJson(reader, VoxyConfig.class);
+                if (conf != null) {
+                    conf.save();
+                    return conf;
+                } else {
+                    Logger.error("Failed to load voxy config, resetting");
                 }
-                Logger.info("Error during config loading, creating new");
-            } else {
-                Logger.info("Config file doesnt exist, creating new");
+            } catch (IOException e) {
+                Logger.error("Could not load config", e);
+            } catch (JsonParseException e) {
+                Logger.error("Could not parse config", e);
             }
-            var config = new VoxyConfig();
-            config.save();
-            return config;
+            Logger.info("Error during config loading, creating new");
         } else {
-            var config = new VoxyConfig();
-            config.enabled = false;
-            config.enableRendering = false;
-            return config;
+            Logger.info("Config file doesnt exist, creating new");
         }
+        var config = new VoxyConfig();
+        config.save();
+        return config;
     }
 
     public void save() {
-        if (!VoxyCommon.isAvailable()) {
-            Logger.info("Not saving config since voxy is unavalible");
-            return;
-        }
-
         try {
             Files.writeString(getConfigPath(), GSON.toJson(this));
         } catch (IOException e) {
@@ -85,6 +72,6 @@ public class VoxyConfig {
     }
 
     public boolean isRenderingEnabled() {
-        return VoxyCommon.isAvailable() && this.enabled && this.enableRendering;
+        return this.enabled && this.enableRendering;
     }
 }

@@ -48,6 +48,15 @@ public class VoxyClient implements ClientModInitializer {
         }
     }
 
+    private static void ensureInstanceFactory() {
+        if (instanceFactorySet) {
+            return;
+        }
+        instanceFactorySet = true;
+        VoxyCommon.setInstanceFactory(VoxyClientInstance::new);
+        Logger.info("Voxy: instance factory registered (ingest/save available)");
+    }
+
     public static void initVoxyClient() {
         if (rendererBootstrapped) {
             return;
@@ -60,11 +69,12 @@ public class VoxyClient implements ClientModInitializer {
             return;
         }
         rendererBootstrapped = true;
+        ensureInstanceFactory();
 
         try {
             var ctx = VkContext.INSTANCE;
             if (!ctx.shouldActivate()) {
-                Logger.warn("Voxy (Vulkan): disabled - " + ctx.getDeactivationReason());
+                Logger.warn("Voxy (Vulkan): GPU path disabled - " + ctx.getDeactivationReason());
                 return;
             }
 
@@ -72,21 +82,15 @@ public class VoxyClient implements ClientModInitializer {
             if (caps != null) {
                 Logger.info("Voxy (Vulkan): detected " + caps);
                 if (!caps.isSystemSupported()) {
-                    Logger.error("Voxy (Vulkan): required device features are missing, Voxy disabled. " + caps);
+                    Logger.error("Voxy (Vulkan): required device features are missing, GPU LoDs disabled. " + caps);
                     return;
                 }
             }
 
             VoxyVulkanRenderSystem.INSTANCE.init();
             Logger.info("Voxy (Vulkan): render system initialized: " + VoxyVulkanRenderSystem.INSTANCE.describe());
-
-            if (!instanceFactorySet) {
-                instanceFactorySet = true;
-                VoxyCommon.setInstanceFactory(VoxyClientInstance::new);
-                Logger.info("Voxy (Vulkan): world engine reactivated, instance factory registered");
-            }
         } catch (Throwable t) {
-            Logger.warn("Voxy (Vulkan): render system initialization failed, Voxy disabled", t);
+            Logger.warn("Voxy (Vulkan): render system initialization failed, GPU LoDs disabled", t);
         }
     }
 
@@ -107,14 +111,16 @@ public class VoxyClient implements ClientModInitializer {
             Logger.info("Voxy (Vulkan): client entrypoint lunar=" + isLunarClient()
                     + " ctx=" + VkContext.INSTANCE);
 
+            ensureInstanceFactory();
             DebugEntries.init();
 
-            ClientTickEvents.END_CLIENT_TICK.register(client -> bootstrapRenderer(null));
+            ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                bootstrapRenderer(null);
+                ClientSessionEvents.tick(client);
+            });
 
             ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
-                if (VoxyCommon.isAvailable()) {
-                    dispatcher.register(VoxyCommands.register());
-                }
+                dispatcher.register(VoxyCommands.register());
             });
 
             FabricLoader.getInstance()

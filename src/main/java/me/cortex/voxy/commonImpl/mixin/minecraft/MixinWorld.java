@@ -40,4 +40,11 @@ public class MixinWorld implements IWorldGetIdentifier {
     public WorldIdentifier voxy$getIdentifier() {
         return this.identifier;
     }
+
+    @Override
+    public void voxy$setIdentifier(WorldIdentifier identifier) {
+        if (this.identifier == null) {
+            this.identifier = identifier;
+        }
+    }
 }

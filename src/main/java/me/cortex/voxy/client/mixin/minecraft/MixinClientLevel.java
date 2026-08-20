@@ -2,6 +2,7 @@ package me.cortex.voxy.client.mixin.minecraft;
 
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.common.world.service.VoxelIngestService;
+import me.cortex.voxy.commonImpl.IWorldGetIdentifier;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
 import net.minecraft.client.multiplayer.ClientChunkCache;
@@ -46,6 +47,12 @@ public abstract class MixinClientLevel {
             final int seaLevel,
             CallbackInfo cir) {
         this.bottomSectionY = ((Level)(Object)this).getMinY()>>4;
+        if (this instanceof IWorldGetIdentifier holder && holder.voxy$getIdentifier() == null && dimension != null) {
+            holder.voxy$setIdentifier(new WorldIdentifier(
+                    dimension,
+                    biomeZoomSeed,
+                    dimensionType == null ? null : dimensionType.unwrapKey().orElse(null)));
+        }
     }
 
     @Inject(method = "setBlocksDirty", at = @At("TAIL"), require = 0)

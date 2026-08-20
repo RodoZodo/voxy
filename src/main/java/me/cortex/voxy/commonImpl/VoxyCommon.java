@@ -77,7 +77,7 @@ public class VoxyCommon implements ModInitializer {
 
     public static void setInstanceFactory(IInstanceFactory factory) {
         if (FACTORY != null) {
-            throw new IllegalStateException("Cannot set instance factory more than once");
+            return;
         }
         FACTORY = factory;
     }
@@ -96,11 +96,10 @@ public class VoxyCommon implements ModInitializer {
 
     public static void createInstance() {
         if (FACTORY == null) {
-            //Logger.info("Voxy factory");
             return;
         }
         if (INSTANCE != null) {
-            throw new IllegalStateException("Cannot create multiple instances");
+            return;
         }
         try {
             INSTANCE = FACTORY.create();

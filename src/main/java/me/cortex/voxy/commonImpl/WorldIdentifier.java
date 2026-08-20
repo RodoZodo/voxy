@@ -90,11 +90,46 @@ public class WorldIdentifier {
     }
 
     public static WorldIdentifier of(Level level) {
-        //Gets or makes an identifier for world
         if (level == null) {
             return null;
         }
-        return ((IWorldGetIdentifier)level).voxy$getIdentifier();
+        if (level instanceof IWorldGetIdentifier holder) {
+            var id = holder.voxy$getIdentifier();
+            if (id != null) {
+                return id;
+            }
+            id = createFromLevel(level);
+            if (id != null) {
+                holder.voxy$setIdentifier(id);
+            }
+            return id;
+        }
+        return createFromLevel(level);
+    }
+
+    @Nullable
+    private static WorldIdentifier createFromLevel(Level level) {
+        try {
+            var key = level.dimension();
+            if (key == null) {
+                return null;
+            }
+            var dim = level.dimensionTypeRegistration();
+            return new WorldIdentifier(key, biomeZoomSeed(level), dim == null ? null : dim.unwrapKey().orElse(null));
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static long biomeZoomSeed(Level level) {
+        try {
+            var manager = level.getBiomeManager();
+            var field = manager.getClass().getDeclaredField("biomeZoomSeed");
+            field.setAccessible(true);
+            return field.getLong(manager);
+        } catch (Throwable t) {
+            return 0L;
+        }
     }
 
     //Common utility function to get or create a world engine
