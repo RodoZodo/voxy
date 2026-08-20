@@ -129,14 +129,14 @@ public final class VoxyVulkanRenderSystem {
         this.properties = VkRenderProperties.get();
         this.compiler = new VkShaderCompiler();
         try {
+            Logger.info("Voxy (Vulkan): init streams");
             this.uploadStream = new VkUploadStream(this.device, ctx.vmaAllocator());
             this.downloadStream = new VkDownloadStream(this.device, ctx.vmaAllocator());
 
             //Graphics path
+            Logger.info("Voxy (Vulkan): init demo graphics pipeline");
             var vert = this.compileStage("demo.vert", VkShaderStage.VERTEX);
             var frag = this.compileStage("demo.frag", VkShaderStage.FRAGMENT);
-            vert.create(this.device);
-            frag.create(this.device);
             this.graphicsLayout = new VkPipelineLayout(this.device,
                     new VkPipelineLayout.Binding[]{new VkPipelineLayout.Binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_VERTEX_BIT)},
                     true);
@@ -149,8 +149,8 @@ public final class VoxyVulkanRenderSystem {
             frag.free(this.device);
 
             //Compute path (demo counter)
+            Logger.info("Voxy (Vulkan): init demo compute pipeline");
             var compute = this.compileStage("demo.comp", VkShaderStage.COMPUTE);
-            compute.create(this.device);
             this.computeLayout = new VkPipelineLayout(this.device,
                     new VkPipelineLayout.Binding[]{new VkPipelineLayout.Binding(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT)},
                     true);
@@ -166,13 +166,16 @@ public final class VoxyVulkanRenderSystem {
             this.counterBuffer = VkBuffer.deviceLocal(ctx.vmaAllocator(), 4,
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
+            Logger.info("Voxy (Vulkan): init HiZ");
             this.hiZ = new VkHiZBuffer(this.device, this.compiler);
+            Logger.info("Voxy (Vulkan): init LOD generator");
             this.lodGen = new VkLodGenerator(this.device, this.compiler, this.uploadStream, this.downloadStream, ctx.vmaAllocator());
             //Route LOD (voxel mip) generation through the GPU when supported
             WorldVoxilizedSectionMipper.setMipDispatcher((section, world, mapper, onDone) ->
-                    this.lodGen.isGpuSupported() && this.lodGen.submit(section, world, mapper, onDone));
+                    this.lodGen != null && this.lodGen.isGpuSupported() && this.lodGen.submit(section, world, mapper, onDone));
 
             //GPU meshing (opaque greedy) + the model tables it reads
+            Logger.info("Voxy (Vulkan): init model tables + mesh generator");
             this.modelTables = new VkModelTables(ctx.vmaAllocator());
             this.meshGen = new VkMeshGenerator(this.device, this.compiler, this.uploadStream, this.modelTables, ctx.vmaAllocator());
 
@@ -182,7 +185,7 @@ public final class VoxyVulkanRenderSystem {
             this.initialUploadPending = true;
 
             this.initialized = true;
-        } catch (RuntimeException e) {
+        } catch (Throwable e) {
             this.free();
             throw e;
         }

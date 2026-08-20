@@ -76,6 +76,7 @@ public final class VkPipelineBuilder {
     public static long createGraphics(VkDevice device, VkPipelineLayout layout, VkShaderModule vertex, VkShaderModule fragment,
                                       int colorFormat, int depthFormat, @Nullable VertexInput vertexInput,
                                       int depthCompareOp, boolean depthTest, boolean depthWrite, boolean translucentBlend) {
+        ensureCreated(device, vertex, fragment);
         try (var stack = MemoryStack.stackPush()) {
             var stages = VkPipelineShaderStageCreateInfo.calloc(2, stack);
             stages.get(0).sType(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
@@ -172,6 +173,7 @@ public final class VkPipelineBuilder {
     }
 
     public static long createCompute(VkDevice device, VkPipelineLayout layout, VkShaderModule compute) {
+        ensureCreated(device, compute);
         try (var stack = MemoryStack.stackPush()) {
             var stage = VkPipelineShaderStageCreateInfo.calloc(stack);
             stage.sType(VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO);
@@ -191,6 +193,15 @@ public final class VkPipelineBuilder {
                 throw new IllegalStateException("vkCreateComputePipelines failed: " + err);
             }
             return p.get(0);
+        }
+    }
+
+    /** SPIR-V is host-side until {@link VkShaderModule#create}; a 0 handle crashes NVIDIA's driver. */
+    private static void ensureCreated(VkDevice device, VkShaderModule... modules) {
+        for (var module : modules) {
+            if (module != null) {
+                module.create(device);
+            }
         }
     }
 

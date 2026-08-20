@@ -109,6 +109,7 @@ public class Logger {
             if (throwable != null) {
                 throwable.printStackTrace(System.out);
             }
+            System.out.flush();
         } catch (Throwable ignored) {
         }
     }
