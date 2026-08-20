@@ -66,7 +66,7 @@ public abstract class MixinClientChunkCache implements ICheekyClientChunkCache {
 
     @Inject(method = "replaceWithPacketData", at = @At("RETURN"), require = 0)
     private void voxy$ingestPacketChunk(CallbackInfoReturnable<LevelChunk> cir) {
-        ClientChunkIngest.noteAttempt(cir.getReturnValue());
+        ClientChunkIngest.noteUpdate(cir.getReturnValue());
     }
 
     @Inject(method = "onLightUpdate", at = @At("TAIL"), require = 0)

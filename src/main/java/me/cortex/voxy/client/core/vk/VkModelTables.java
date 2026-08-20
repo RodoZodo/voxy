@@ -1,6 +1,6 @@
 package me.cortex.voxy.client.core.vk;
 
-import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VkCommandBuffer;
 
 import java.nio.ByteBuffer;
@@ -61,29 +61,35 @@ public final class VkModelTables implements AutoCloseable {
             return;
         }
         this.lastUploaded = this.revision;
-        try (var stack = MemoryStack.stackPush()) {
-            var ids = stack.calloc(this.idMappings.length * 4).order(ByteOrder.LITTLE_ENDIAN);
-            for (int v : this.idMappings) {
-                ids.putInt(v);
-            }
-            ids.position(0);
-            this.idMappingsBuffer.write(ids);
-
-            var meta = stack.calloc(this.metadataCache.length * 8).order(ByteOrder.LITTLE_ENDIAN);
-            for (long v : this.metadataCache) {
-                meta.putLong(v);
-            }
-            meta.position(0);
-            this.metadataCacheBuffer.write(meta);
-
-            var fluid = stack.calloc(this.fluidLUT.length * 4).order(ByteOrder.LITTLE_ENDIAN);
-            for (int v : this.fluidLUT) {
-                fluid.putInt(v);
-            }
-            fluid.position(0);
-            this.fluidLUTBuffer.write(fluid);
-        }
+        // 1M ints + 64K longs is several MiB — cannot live on LWJGL's 64KiB MemoryStack.
+        writeInts(this.idMappingsBuffer, this.idMappings);
+        writeLongs(this.metadataCacheBuffer, this.metadataCache);
+        writeInts(this.fluidLUTBuffer, this.fluidLUT);
         VkSync.memoryBarrier(cb);//host write -> shader read
+    }
+
+    private static void writeInts(VkBuffer target, int[] src) {
+        ByteBuffer buf = MemoryUtil.memAlloc(src.length * 4);
+        try {
+            buf.order(ByteOrder.LITTLE_ENDIAN);
+            buf.asIntBuffer().put(src);
+            buf.position(0).limit(src.length * 4);
+            target.write(buf);
+        } finally {
+            MemoryUtil.memFree(buf);
+        }
+    }
+
+    private static void writeLongs(VkBuffer target, long[] src) {
+        ByteBuffer buf = MemoryUtil.memAlloc(src.length * 8);
+        try {
+            buf.order(ByteOrder.LITTLE_ENDIAN);
+            buf.asLongBuffer().put(src);
+            buf.position(0).limit(src.length * 8);
+            target.write(buf);
+        } finally {
+            MemoryUtil.memFree(buf);
+        }
     }
 
     public VkBuffer idMappingsBuffer() {

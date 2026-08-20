@@ -75,15 +75,13 @@ public class VoxyClient implements ClientModInitializer {
             if (!ctx.shouldActivate()) {
                 return;
             }
+            ctx.ensureCapabilities();
 
             var caps = ctx.capabilities();
-            if (caps != null) {
-                Logger.info("Voxy (Vulkan): detected " + caps);
-                if (!caps.isSystemSupported()) {
-                    gpuInitFailed = true;
-                    Logger.error("Voxy (Vulkan): required device features are missing, GPU LoDs disabled. " + caps);
-                    return;
-                }
+            if (caps != null && !caps.isSystemSupported()) {
+                gpuInitFailed = true;
+                Logger.error("Voxy (Vulkan): required device features are missing, GPU LoDs disabled. " + caps);
+                return;
             }
 
             VoxyVulkanRenderSystem.INSTANCE.init();

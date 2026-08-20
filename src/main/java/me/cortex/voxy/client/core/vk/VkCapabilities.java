@@ -110,7 +110,7 @@ public final class VkCapabilities {
             features12.pNext(features13.address());
 
             VkPhysicalDeviceMeshShaderFeaturesEXT meshFeatures = null;
-            if (deviceHasExtension(physicalDevice, stack, VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
+            if (deviceHasExtension(physicalDevice, VK_EXT_MESH_SHADER_EXTENSION_NAME)) {
                 meshFeatures = VkPhysicalDeviceMeshShaderFeaturesEXT.calloc(stack);
                 meshFeatures.sType(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT);
                 features13.pNext(meshFeatures.address());
@@ -164,23 +164,43 @@ public final class VkCapabilities {
         return null;
     }
 
-    private static boolean deviceHasExtension(VkPhysicalDevice physicalDevice, MemoryStack stack, String name) {
-        IntBuffer count = stack.mallocInt(1);
-        int err = vkEnumerateDeviceExtensionProperties(physicalDevice, (ByteBuffer) null, count, null);
-        if (err != VK_SUCCESS) {
-            return false;
-        }
-        var props = VkExtensionProperties.calloc(count.get(0), stack);
-        err = vkEnumerateDeviceExtensionProperties(physicalDevice, (ByteBuffer) null, count, props);
-        if (err != VK_SUCCESS) {
-            return false;
-        }
-        for (int i = 0; i < props.capacity(); i++) {
-            if (name.equals(props.get(i).extensionNameString())) {
-                return true;
+    /**
+     * Enumerate device extensions on the heap. NVIDIA advertises hundreds of extensions;
+     * {@code VkExtensionProperties} is ~260 bytes each, which overflows LWJGL's default 64KiB
+     * {@link MemoryStack} if allocated there.
+     */
+    private static boolean deviceHasExtension(VkPhysicalDevice physicalDevice, String name) {
+        try (var stack = MemoryStack.stackPush()) {
+            IntBuffer count = stack.mallocInt(1);
+            int err = vkEnumerateDeviceExtensionProperties(physicalDevice, (ByteBuffer) null, count, null);
+            if (err != VK_SUCCESS) {
+                return false;
+            }
+            int n = count.get(0);
+            if (n <= 0) {
+                return false;
+            }
+            if (n > 4096) {
+                n = 4096;
+            }
+            var props = VkExtensionProperties.calloc(n);
+            try {
+                count.put(0, n);
+                err = vkEnumerateDeviceExtensionProperties(physicalDevice, (ByteBuffer) null, count, props);
+                if (err != VK_SUCCESS) {
+                    return false;
+                }
+                int got = Math.min(count.get(0), props.capacity());
+                for (int i = 0; i < got; i++) {
+                    if (name.equals(props.get(i).extensionNameString())) {
+                        return true;
+                    }
+                }
+                return false;
+            } finally {
+                props.free();
             }
         }
-        return false;
     }
 
     @Override

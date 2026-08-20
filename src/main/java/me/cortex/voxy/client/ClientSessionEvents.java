@@ -82,6 +82,8 @@ public class ClientSessionEvents {
                 var ctx = VkContext.INSTANCE;
                 if (gpu) {
                     notifyPlayer("Voxy: world engine started (Vulkan LoDs)");
+                } else if (ctx.isVulkanActive()) {
+                    notifyPlayer("Voxy: VulkanDevice hooked, but GPU LoDs failed to start (ingest still running). Check latest.log for OutOfMemoryError / render system init.");
                 } else if (ctx.gpuLooksLikeVulkan()) {
                     notifyPlayer("Voxy: Minecraft is on " + ctx.lastBackendName()
                             + " but Voxy could not hook VulkanDevice yet (gpu class="

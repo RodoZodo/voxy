@@ -52,12 +52,32 @@ public final class VkContext {
             return;
         }
         try {
+            // Store the device only. Capability query enumerates every device extension and must
+            // not run inside VulkanDevice.<init> / Minecraft graphics startup (crash ladder +
+            // LWJGL MemoryStack overflow on NVIDIA's ~200 extensions).
             this.device = device;
-            this.capabilities = new VkCapabilities(device.vkDevice().getPhysicalDevice(), device.instance());
-            Logger.info("Voxy (Vulkan): captured VulkanDevice caps=" + this.capabilities);
+            this.capabilities = null;
+            Logger.info("Voxy (Vulkan): captured VulkanDevice (capability query deferred)");
         } catch (Throwable t) {
-            // Keep the device even if capability query fails — without it LoDs cannot hook.
-            Logger.warn("Voxy (Vulkan): VulkanDevice captured but capability query failed", t);
+            this.device = device;
+            Logger.warn("Voxy (Vulkan): capture logging failed", t);
+        }
+    }
+
+    /**
+     * Query device features on the game thread after Minecraft has finished constructing
+     * {@link VulkanDevice}. Safe to call repeatedly; never throws.
+     */
+    public void ensureCapabilities() {
+        var dev = this.device;
+        if (dev == null || this.capabilities != null) {
+            return;
+        }
+        try {
+            this.capabilities = new VkCapabilities(dev.vkDevice().getPhysicalDevice(), dev.instance());
+            Logger.info("Voxy (Vulkan): caps=" + this.capabilities);
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): capability query failed", t);
         }
     }
 

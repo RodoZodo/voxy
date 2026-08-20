@@ -10,6 +10,7 @@ import me.cortex.voxy.common.world.other.Mapper;
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import me.cortex.voxy.common.voxelization.WorldVoxilizedSectionMipper;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDescriptorBufferInfo;
 import org.lwjgl.vulkan.VkDevice;
@@ -251,13 +252,7 @@ public final class VkLodGenerator implements AutoCloseable {
             while (newSize < (long) table.length * 4) newSize <<= 1;
             if (newSize > (1 << 22)) newSize = (1 << 22); // cap 4 MiB (1M entries)
             var newBuf = VkBuffer.hostVisible(this.vma, newSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-            // Write new table into new buffer immediately (host-visible, no GPU use yet)
-            try (var stack = MemoryStack.stackPush()) {
-                var buf = stack.malloc(table.length * 4);
-                for (byte b : table) buf.putInt(b & 0xFF);
-                buf.flip();
-                newBuf.write(buf);
-            }
+            writeOpacityBytes(newBuf, table);
             // Keep old buffer alive for 2 frames (current dispatch may still be in flight if we had not yet dispatched)
             var old = this.opacityTableBuffer;
             this.pendingOpacityTableBuffer = newBuf;
@@ -273,15 +268,22 @@ public final class VkLodGenerator implements AutoCloseable {
             return;
         }
 
-        try (var stack = MemoryStack.stackPush()) {
-            var buf = stack.malloc(table.length * 4);
+        writeOpacityBytes(this.opacityTableBuffer, table);
+        VkSync.memoryBarrier(cb); //host write -> compute read
+    }
+
+    private static void writeOpacityBytes(VkBuffer target, byte[] table) {
+        ByteBuffer buf = MemoryUtil.memAlloc(table.length * 4);
+        try {
+            buf.order(ByteOrder.LITTLE_ENDIAN);
             for (byte b : table) {
                 buf.putInt(b & 0xFF);
             }
             buf.flip();
-            this.opacityTableBuffer.write(buf);
+            target.write(buf);
+        } finally {
+            MemoryUtil.memFree(buf);
         }
-        VkSync.memoryBarrier(cb); //host write -> compute read
     }
 
     private void setBufferWrite(VkWriteDescriptorSet write, int binding, VkDescriptorBufferInfo.Buffer info) {

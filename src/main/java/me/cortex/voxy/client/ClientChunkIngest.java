@@ -41,6 +41,22 @@ public final class ClientChunkIngest {
         if (VoxyCommon.getInstance() == null) {
             return;
         }
+        if (INGESTED.contains(chunk.getPos().pack())) {
+            return;
+        }
+        if (VoxelIngestService.tryAutoIngestChunk(chunk)) {
+            mark(chunk);
+        }
+    }
+
+    /** Chunk packet replace — re-ingest even if we already have this chunk. */
+    public static void noteUpdate(LevelChunk chunk) {
+        if (chunk == null || !VoxyConfig.CONFIG.ingestEnabled) {
+            return;
+        }
+        if (VoxyCommon.getInstance() == null) {
+            return;
+        }
         if (VoxelIngestService.tryAutoIngestChunk(chunk)) {
             mark(chunk);
         }
