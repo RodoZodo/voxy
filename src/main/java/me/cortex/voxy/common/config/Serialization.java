@@ -202,8 +202,9 @@ public class Serialization {
                     return Stream.of();
                 }
             }).collect(Collectors.toList());
-        } catch (IOException e) {
-            throw new RuntimeException(e);
+        } catch (Exception e) {
+            Logger.error("Failed to collect classes from path: " + pack, e);
+            return List.of();
         }
     }
 }

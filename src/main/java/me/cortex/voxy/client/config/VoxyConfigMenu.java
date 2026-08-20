@@ -13,6 +13,15 @@ import net.minecraft.resources.Identifier;
 public class VoxyConfigMenu implements ConfigEntryPoint {
     @Override
     public void registerConfigLate(ConfigBuilder B) {
+        try {
+            registerConfigLateInner(B);
+        } catch (Throwable t) {
+            System.out.println("[Voxy] Sodium config registration failed: " + t);
+            t.printStackTrace(System.out);
+        }
+    }
+
+    private void registerConfigLateInner(ConfigBuilder B) {
         var CFG = VoxyConfig.CONFIG;
 
         var cc = B.registerModOptions("voxy", "Voxy", VoxyCommon.MOD_VERSION)

@@ -5,17 +5,17 @@ import com.mojang.blaze3d.systems.GpuDevice;
 import com.mojang.blaze3d.systems.RenderSystem;
 import me.cortex.voxy.client.VoxyClient;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-//Thanks iris for making me need todo this ;-; _irritater_
+@Pseudo
 @Mixin(value = RenderSystem.class, remap = false)
 public class MixinRenderSystem {
-    //We need to inject before iris to initalize our systems.
-    // require=0: Lunar/Ichor may patch or skip blaze3d mixins; Minecraft.<init> TAIL is the fallback.
+    // Capture only. Pipeline init is deferred to Minecraft.tick so a failure cannot trip the crash ladder.
     @Inject(method = "initRenderer", order = 900, remap = false, at = @At("RETURN"), require = 0)
     private static void voxy$injectInit(GpuDevice device, CallbackInfo ci) {
-        VoxyClient.bootstrapRenderer(device);
+        VoxyClient.captureRenderer(device);
     }
 }

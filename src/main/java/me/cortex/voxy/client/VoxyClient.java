@@ -8,6 +8,7 @@ import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import org.jetbrains.annotations.Nullable;
 
@@ -20,22 +21,27 @@ public class VoxyClient implements ClientModInitializer {
     private static boolean instanceFactorySet;
     private static boolean rendererBootstrapped;
 
-    /**
-     * Capture the GPU backend (if any) and init Voxy. Idempotent and never throws — Lunar/Ichor
-     * and Minecraft's crash ladder both abort the whole process if renderer startup throws.
-     *
-     * <p>A null device with no live {@link GpuDevice} is ignored (too early, e.g. an unused
-     * {@code Minecraft} constructor) so we do not lock bootstrap before the backend exists.
-     */
-    public static void bootstrapRenderer(@Nullable GpuDevice device) {
+    /** Capture only — never compile pipelines. Safe during Minecraft graphics-backend startup. */
+    public static void captureRenderer(@Nullable GpuDevice device) {
         try {
             if (device == null) {
                 device = RenderSystem.tryGetDevice();
             }
-            if (device == null) {
-                return;
+            if (device != null) {
+                VkContext.INSTANCE.captureFromGpuDevice(device);
             }
-            VkContext.INSTANCE.captureFromGpuDevice(device);
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): device capture failed", t);
+        }
+    }
+
+    /**
+     * Capture + init pipelines. Must not run inside {@code Minecraft.<init>} / backend createDevice:
+     * a throw there trips the crash ladder (Graphics API forced to OpenGL).
+     */
+    public static void bootstrapRenderer(@Nullable GpuDevice device) {
+        try {
+            captureRenderer(device);
             initVoxyClient();
         } catch (Throwable t) {
             Logger.warn("Voxy (Vulkan): renderer bootstrap failed", t);
@@ -46,65 +52,82 @@ public class VoxyClient implements ClientModInitializer {
         if (rendererBootstrapped) {
             return;
         }
-        rendererBootstrapped = true;
-
-        var ctx = VkContext.INSTANCE;
-        if (!ctx.shouldActivate()) {
-            Logger.warn("Voxy (Vulkan): disabled - " + ctx.getDeactivationReason());
-            return;
-        }
-
-        var caps = ctx.capabilities();
-        if (caps != null) {
-            Logger.info("Voxy (Vulkan): detected " + caps);
-            if (!caps.isSystemSupported()) {
-                Logger.error("Voxy (Vulkan): required device features are missing, Voxy disabled. " + caps);
+        try {
+            if (RenderSystem.tryGetDevice() == null && !VkContext.INSTANCE.isVulkanActive()) {
                 return;
             }
-        }
-
-        try {
-            VoxyVulkanRenderSystem.INSTANCE.init();
-            Logger.info("Voxy (Vulkan): render system initialized: " + VoxyVulkanRenderSystem.INSTANCE.describe());
-        } catch (RuntimeException e) {
-            Logger.error("Voxy (Vulkan): render system initialization failed, Voxy disabled", e);
+        } catch (Throwable t) {
             return;
         }
+        rendererBootstrapped = true;
 
-        //World engine reactivation: from now on a Voxy instance (CPU octree + ingest) is created
-        // on session start, feeding the GPU traversal.
-        if (!instanceFactorySet) {
-            instanceFactorySet = true;
-            VoxyCommon.setInstanceFactory(VoxyClientInstance::new);
-            Logger.info("Voxy (Vulkan): world engine reactivated, instance factory registered");
+        try {
+            var ctx = VkContext.INSTANCE;
+            if (!ctx.shouldActivate()) {
+                Logger.warn("Voxy (Vulkan): disabled - " + ctx.getDeactivationReason());
+                return;
+            }
+
+            var caps = ctx.capabilities();
+            if (caps != null) {
+                Logger.info("Voxy (Vulkan): detected " + caps);
+                if (!caps.isSystemSupported()) {
+                    Logger.error("Voxy (Vulkan): required device features are missing, Voxy disabled. " + caps);
+                    return;
+                }
+            }
+
+            VoxyVulkanRenderSystem.INSTANCE.init();
+            Logger.info("Voxy (Vulkan): render system initialized: " + VoxyVulkanRenderSystem.INSTANCE.describe());
+
+            if (!instanceFactorySet) {
+                instanceFactorySet = true;
+                VoxyCommon.setInstanceFactory(VoxyClientInstance::new);
+                Logger.info("Voxy (Vulkan): world engine reactivated, instance factory registered");
+            }
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): render system initialization failed, Voxy disabled", t);
         }
     }
 
     public static boolean isLunarClient() {
-        var loader = FabricLoader.getInstance();
-        return loader.isModLoaded("ichor") || loader.isModLoaded("lunar") || loader.isModLoaded("lunarclient");
+        try {
+            var loader = FabricLoader.getInstance();
+            return loader.isModLoaded("ichor") || loader.isModLoaded("lunar") || loader.isModLoaded("lunarclient");
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     @Override
     public void onInitializeClient() {
-        Logger.info("Voxy (Vulkan): client entrypoint lunar=" + isLunarClient()
-                + " ctx=" + VkContext.INSTANCE);
+        try {
+            System.out.println("[Voxy] client entrypoint lunar=" + isLunarClient()
+                    + " ctx=" + VkContext.INSTANCE);
+            Logger.info("Voxy (Vulkan): client entrypoint lunar=" + isLunarClient()
+                    + " ctx=" + VkContext.INSTANCE);
 
-        DebugEntries.init();
+            DebugEntries.init();
 
-        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
-            if (VoxyCommon.isAvailable()) {
-                dispatcher.register(VoxyCommands.register());
-            }
-        });
+            ClientTickEvents.END_CLIENT_TICK.register(client -> bootstrapRenderer(null));
 
-        FabricLoader.getInstance()
-                .getEntrypoints("frex_flawless_frames", Consumer.class)
-                .forEach(api -> ((Consumer<Function<String,Consumer<Boolean>>>)api).accept(name->active->{if (active) {
-                    FREX.add(name);
-                } else {
-                    FREX.remove(name);
-                }}));
+            ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+                if (VoxyCommon.isAvailable()) {
+                    dispatcher.register(VoxyCommands.register());
+                }
+            });
+
+            FabricLoader.getInstance()
+                    .getEntrypoints("frex_flawless_frames", Consumer.class)
+                    .forEach(api -> ((Consumer<Function<String,Consumer<Boolean>>>)api).accept(name->active->{if (active) {
+                        FREX.add(name);
+                    } else {
+                        FREX.remove(name);
+                    }}));
+        } catch (Throwable t) {
+            System.out.println("[Voxy] onInitializeClient failed: " + t);
+            t.printStackTrace(System.out);
+        }
     }
 
     public static boolean isFrexActive() {

@@ -18,7 +18,16 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(ClientChunkCache.class)
 public class MixinClientChunkCache implements ICheekyClientChunkCache {
     @Unique
-    private static final boolean BOBBY_INSTALLED = FabricLoader.getInstance().isModLoaded("bobby");
+    private static final boolean BOBBY_INSTALLED = bobbyInstalled();
+
+    @Unique
+    private static boolean bobbyInstalled() {
+        try {
+            return FabricLoader.getInstance().isModLoaded("bobby");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
 
     @Shadow
     private volatile ClientChunkCache.Storage storage;
@@ -38,7 +47,7 @@ public class MixinClientChunkCache implements ICheekyClientChunkCache {
         return null;
     }
 
-    @Inject(method = "drop", at = @At("HEAD"))
+    @Inject(method = "drop", at = @At("HEAD"), require = 0)
     public void voxy$captureChunkBeforeUnload(ChunkPos pos, CallbackInfo ci) {
         if (VoxyConfig.CONFIG.ingestEnabled && BOBBY_INSTALLED) {
             var chunk = this.voxy$cheekyGetChunk(pos.x(), pos.z());

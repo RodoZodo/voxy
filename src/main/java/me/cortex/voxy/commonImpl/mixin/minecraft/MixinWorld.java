@@ -19,7 +19,7 @@ public class MixinWorld implements IWorldGetIdentifier {
     @Unique
     private WorldIdentifier identifier;
 
-    @Inject(method = "<init>", at = @At("RETURN"))
+    @Inject(method = "<init>", at = @At("RETURN"), require = 0)
     private void voxy$injectIdentifier(WritableLevelData properties,
                                        ResourceKey<Level> key,
                                        RegistryAccess registryManager,

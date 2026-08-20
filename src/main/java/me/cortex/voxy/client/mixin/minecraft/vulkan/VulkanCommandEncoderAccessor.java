@@ -5,9 +5,11 @@ import com.mojang.blaze3d.vulkan.VulkanRenderPass;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.gen.Accessor;
 import org.spongepowered.asm.mixin.gen.Invoker;
 
+@Pseudo
 @Mixin(value = VulkanCommandEncoder.class, remap = false)
 public interface VulkanCommandEncoderAccessor {
     /** The render pass currently being recorded, if any. */

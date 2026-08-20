@@ -23,7 +23,7 @@ public abstract class MixinDebugScreenEntryList {
     @Shadow
     private Map<Identifier, DebugScreenEntryStatus> allStatuses;
 
-    @Inject(method = "rebuildCurrentList", at = @At(value = "INVOKE", target = "Ljava/util/List;sort(Ljava/util/Comparator;)V"))
+    @Inject(method = "rebuildCurrentList", at = @At(value = "INVOKE", target = "Ljava/util/List;sort(Ljava/util/Comparator;)V"), require = 0)
     private void voxy$injectVersionDisplay(CallbackInfo cir) {
         if (this.isOverlayVisible()) {
             var id = Identifier.fromNamespaceAndPath("voxy", "version");

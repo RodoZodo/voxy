@@ -32,7 +32,7 @@ public abstract class MixinClientLevel {
 
     @Shadow public abstract ClientChunkCache getChunkSource();
 
-    @Inject(method = "<init>", at = @At("TAIL"))
+    @Inject(method = "<init>", at = @At("TAIL"), require = 0)
     private void voxy$getBottom(
             final ClientPacketListener connection,
             final ClientLevel.ClientLevelData levelData,
@@ -48,7 +48,7 @@ public abstract class MixinClientLevel {
         this.bottomSectionY = ((Level)(Object)this).getMinY()>>4;
     }
 
-    @Inject(method = "setBlocksDirty", at = @At("TAIL"))
+    @Inject(method = "setBlocksDirty", at = @At("TAIL"), require = 0)
     private void voxy$injectIngestOnStateChange(BlockPos pos, BlockState old, BlockState updated, CallbackInfo cir) {
         if (old == updated) return;
 

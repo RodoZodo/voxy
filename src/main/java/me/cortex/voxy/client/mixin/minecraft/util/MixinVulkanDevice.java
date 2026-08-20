@@ -3,6 +3,7 @@ package me.cortex.voxy.client.mixin.minecraft.util;
 import com.mojang.blaze3d.vulkan.VulkanDevice;
 import me.cortex.voxy.client.core.vk.VkContext;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -13,8 +14,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * graphics-backend startup path — an exception trips the crash ladder back to OpenGL.
  *
  * <p>Lunar/Ichor may skip this mixin (optional config). {@code GpuDevice} unwrap +
- * {@code Minecraft.<init>} TAIL are the fallbacks.
+ * {@code Minecraft.tick} are the fallbacks.
  */
+@Pseudo
 @Mixin(value = VulkanDevice.class, remap = false)
 public class MixinVulkanDevice {
     @Inject(method = "<init>", at = @At("TAIL"), require = 0)

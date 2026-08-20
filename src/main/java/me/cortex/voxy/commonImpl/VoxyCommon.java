@@ -13,20 +13,44 @@ public class VoxyCommon implements ModInitializer {
     public static final boolean IS_IN_MINECRAFT;
 
     static {
-        ModContainer mod = (ModContainer) FabricLoader.getInstance().getModContainer("voxy").orElse(null);
-        if (mod == null) {
-            IS_IN_MINECRAFT = false;
-            Logger.error("Running voxy without minecraft");
-            MOD_VERSION = "<UNKNOWN>";
-            IS_DEDICATED_SERVER = false;
-        } else {
-            IS_IN_MINECRAFT = true;
-            var version = mod.getMetadata().getVersion().getFriendlyString();
-            var commit = mod.getMetadata().getCustomValue("commit").getAsString();
-            MOD_VERSION = version + "-" + commit.substring(0,7);
-            IS_DEDICATED_SERVER = FabricLoader.getInstance().getEnvironmentType() == EnvType.SERVER;
-            Serialization.init();
+        String version = "<UNKNOWN>";
+        boolean inMinecraft = false;
+        boolean dedicated = false;
+        try {
+            ModContainer mod = FabricLoader.getInstance().getModContainer("voxy").orElse(null);
+            if (mod == null) {
+                System.out.println("[Voxy] Running voxy without minecraft");
+            } else {
+                inMinecraft = true;
+                version = mod.getMetadata().getVersion().getFriendlyString();
+                try {
+                    var commit = mod.getMetadata().getCustomValue("commit");
+                    if (commit != null) {
+                        String hash = commit.getAsString();
+                        if (hash != null && hash.length() >= 7) {
+                            version = version + "-" + hash.substring(0, 7);
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+                try {
+                    dedicated = FabricLoader.getInstance().getEnvironmentType() == EnvType.SERVER;
+                } catch (Throwable ignored) {
+                }
+                try {
+                    Serialization.init();
+                } catch (Throwable t) {
+                    System.out.println("[Voxy] Serialization.init failed: " + t);
+                    t.printStackTrace(System.out);
+                }
+            }
+        } catch (Throwable t) {
+            System.out.println("[Voxy] VoxyCommon static init failed: " + t);
+            t.printStackTrace(System.out);
         }
+        IS_IN_MINECRAFT = inMinecraft;
+        MOD_VERSION = version;
+        IS_DEDICATED_SERVER = dedicated;
     }
 
     //This is hardcoded like this because people do not understand what they are doing

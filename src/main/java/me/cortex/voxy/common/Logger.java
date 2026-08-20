@@ -52,8 +52,12 @@ public class Logger {
 
         String error = (INSERT_CLASS?("["+callClsName()+"]: "):"") + Stream.of(args).map(Logger::objToString).collect(Collectors.joining(" "));
         LOGGER.error(error, throwable);
-        if (VoxyCommon.IS_IN_MINECRAFT && !VoxyCommon.IS_DEDICATED_SERVER) {
-            showInHUD(error);//This is done so that on dedicated server, the Minecraft client class isnt loaded
+        echo("ERROR", error, throwable);
+        try {
+            if (VoxyCommon.IS_IN_MINECRAFT && !VoxyCommon.IS_DEDICATED_SERVER) {
+                showInHUD(error);//This is done so that on dedicated server, the Minecraft client class isnt loaded
+            }
+        } catch (Throwable ignored) {
         }
     }
 
@@ -77,7 +81,9 @@ public class Logger {
                 throwable = (Throwable) i;
             }
         }
-        LOGGER.warn((INSERT_CLASS?("["+callClsName()+"]: "):"") + Stream.of(args).map(Logger::objToString).collect(Collectors.joining(" ")), throwable);
+        String msg = (INSERT_CLASS?("["+callClsName()+"]: "):"") + Stream.of(args).map(Logger::objToString).collect(Collectors.joining(" "));
+        LOGGER.warn(msg, throwable);
+        echo("WARN", msg, throwable);
     }
 
     public static String info(Object... args) {
@@ -92,7 +98,19 @@ public class Logger {
         }
         var val = (INSERT_CLASS?("["+callClsName()+"]: "):"") + Stream.of(args).map(Logger::objToString).collect(Collectors.joining(" "));
         LOGGER.info(val, throwable);
+        echo("INFO", val, throwable);
         return val;
+    }
+
+    /** Lunar's latest.log often drops the SLF4J "Voxy" logger; stdout shows up as [STDOUT]. */
+    private static void echo(String level, String msg, Throwable throwable) {
+        try {
+            System.out.println("[Voxy] [" + level + "] " + msg);
+            if (throwable != null) {
+                throwable.printStackTrace(System.out);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private static String objToString(Object obj) {

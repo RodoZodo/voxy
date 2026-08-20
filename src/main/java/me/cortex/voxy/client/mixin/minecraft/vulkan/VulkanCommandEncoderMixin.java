@@ -7,6 +7,7 @@ import com.mojang.blaze3d.vulkan.VulkanRenderPass;
 import me.cortex.voxy.client.core.vk.VoxyVulkanRenderSystem;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Pseudo;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -25,6 +26,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *   <li>{@code submit} HEAD - end of frame catch-all: any pending stream work.</li>
  * </ol>
  */
+@Pseudo
 @Mixin(value = VulkanCommandEncoder.class, remap = false)
 public abstract class VulkanCommandEncoderMixin {
     @Shadow
