@@ -76,6 +76,10 @@ public final class VkMeshGenerator implements AutoCloseable {
     private AsyncNodeManager nodeManager;
 
     public VkMeshGenerator(VkDevice device, VkShaderCompiler compiler, VkUploadStream uploadStream, VkModelTables tables, long vma) {
+        this(device, compileStage(compiler, "lod/mesh.comp"), uploadStream, tables, vma);
+    }
+
+    public VkMeshGenerator(VkDevice device, VkShaderModule module, VkUploadStream uploadStream, VkModelTables tables, long vma) {
         this.device = device;
         this.uploadStream = uploadStream;
         this.tables = tables;
@@ -86,7 +90,6 @@ public final class VkMeshGenerator implements AutoCloseable {
                 new VkPipelineLayout.Binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
         }, true);
 
-        var module = this.compileStage(compiler, "lod/mesh.comp");
         try {
             this.pipeline = VkPipelineBuilder.createCompute(device, this.layout, module);
         } finally {
@@ -100,6 +103,16 @@ public final class VkMeshGenerator implements AutoCloseable {
             this.slots[i] = VkBuffer.hostVisible(vma, SLOT_SIZE,
                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
             this.slotBase[i] = this.slots[i].mapPersistent();
+        }
+    }
+
+    /** Compile mesh.comp to host SPIR-V (no device). Safe off the render thread. */
+    public static VkShaderModule compileMeshSpirv() {
+        var compiler = new VkShaderCompiler();
+        try {
+            return compileStage(compiler, "lod/mesh.comp");
+        } finally {
+            compiler.close();
         }
     }
 
@@ -269,7 +282,7 @@ public final class VkMeshGenerator implements AutoCloseable {
         write.pBufferInfo(info);
     }
 
-    private VkShaderModule compileStage(VkShaderCompiler compiler, String file) {
+    private static VkShaderModule compileStage(VkShaderCompiler compiler, String file) {
         var src = VkShaderCompiler.loadResource(file);
         return compiler.compile("voxy:" + file, src, VkShaderStage.COMPUTE);
     }

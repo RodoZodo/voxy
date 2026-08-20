@@ -59,33 +59,31 @@ public class VoxyClient implements ClientModInitializer {
 
     public static void initVoxyClient() {
         ensureInstanceFactory();
-        if (VoxyVulkanRenderSystem.INSTANCE.isInitialized() || gpuInitFailed) {
+        if (gpuInitFailed) {
             return;
         }
         try {
-            if (RenderSystem.tryGetDevice() == null && !VkContext.INSTANCE.isVulkanActive()) {
-                return;
-            }
-        } catch (Throwable t) {
-            return;
-        }
+            if (!VoxyVulkanRenderSystem.INSTANCE.isInitialized()) {
+                if (RenderSystem.tryGetDevice() == null && !VkContext.INSTANCE.isVulkanActive()) {
+                    return;
+                }
+                var ctx = VkContext.INSTANCE;
+                if (!ctx.shouldActivate()) {
+                    return;
+                }
+                ctx.ensureCapabilities();
 
-        try {
-            var ctx = VkContext.INSTANCE;
-            if (!ctx.shouldActivate()) {
-                return;
-            }
-            ctx.ensureCapabilities();
+                var caps = ctx.capabilities();
+                if (caps != null && !caps.isSystemSupported()) {
+                    gpuInitFailed = true;
+                    Logger.error("Voxy (Vulkan): required device features are missing, GPU LoDs disabled. " + caps);
+                    return;
+                }
 
-            var caps = ctx.capabilities();
-            if (caps != null && !caps.isSystemSupported()) {
-                gpuInitFailed = true;
-                Logger.error("Voxy (Vulkan): required device features are missing, GPU LoDs disabled. " + caps);
-                return;
+                VoxyVulkanRenderSystem.INSTANCE.init();
+                Logger.info("Voxy (Vulkan): render system initialized: " + VoxyVulkanRenderSystem.INSTANCE.describe());
             }
-
-            VoxyVulkanRenderSystem.INSTANCE.init();
-            Logger.info("Voxy (Vulkan): render system initialized: " + VoxyVulkanRenderSystem.INSTANCE.describe());
+            VoxyVulkanRenderSystem.INSTANCE.pollDeferredMeshGenerator();
         } catch (Throwable t) {
             gpuInitFailed = true;
             Logger.warn("Voxy (Vulkan): render system initialization failed, GPU LoDs disabled", t);

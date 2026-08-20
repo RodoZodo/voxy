@@ -99,6 +99,8 @@ public final class VoxyVulkanRenderSystem {
     private VkLodGenerator lodGen;
     private VkModelTables modelTables;
     private VkMeshGenerator meshGen;
+    private volatile VkShaderModule pendingMeshSpirv;
+    private volatile boolean meshCompileFailed;
 
     //Octree + traversal (created when a world engine comes up)
     private AsyncNodeManager nodeManager;
@@ -174,10 +176,10 @@ public final class VoxyVulkanRenderSystem {
             WorldVoxilizedSectionMipper.setMipDispatcher((section, world, mapper, onDone) ->
                     this.lodGen != null && this.lodGen.isGpuSupported() && this.lodGen.submit(section, world, mapper, onDone));
 
-            //GPU meshing (opaque greedy) + the model tables it reads
-            Logger.info("Voxy (Vulkan): init model tables + mesh generator");
+            //GPU model tables only here. mesh.comp is huge (int64 greedy mesher) and compiling it
+            // on the render thread freezes the Minecraft loading overlay, then Lunar/TDR kills the process.
+            Logger.info("Voxy (Vulkan): init model tables");
             this.modelTables = new VkModelTables(ctx.vmaAllocator());
-            this.meshGen = new VkMeshGenerator(this.device, this.compiler, this.uploadStream, this.modelTables, ctx.vmaAllocator());
 
             //The vertex/index data sits in the upload stream's staging ring; it is copied into
             //the device-local buffers at the next frame's splice. The frame after that executes
@@ -185,9 +187,68 @@ public final class VoxyVulkanRenderSystem {
             this.initialUploadPending = true;
 
             this.initialized = true;
+            this.startDeferredMeshCompile();
         } catch (Throwable e) {
             this.free();
             throw e;
+        }
+    }
+
+    /** shaderc of lod/mesh.comp on a daemon thread so the title screen can present. */
+    private void startDeferredMeshCompile() {
+        Thread t = new Thread(() -> {
+            try {
+                Logger.info("Voxy (Vulkan): compiling mesh.comp off render thread");
+                var module = VkMeshGenerator.compileMeshSpirv();
+                if (!this.initialized) {
+                    module.free(null);
+                    return;
+                }
+                this.pendingMeshSpirv = module;
+                Logger.info("Voxy (Vulkan): mesh.comp SPIR-V ready");
+            } catch (Throwable e) {
+                this.meshCompileFailed = true;
+                Logger.warn("Voxy (Vulkan): mesh.comp compile failed, GPU meshing disabled", e);
+            }
+        }, "voxy-mesh-compile");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * Create the GPU mesh pipeline on the render thread once background SPIR-V is ready.
+     * Safe to call every tick; never throws.
+     */
+    public void pollDeferredMeshGenerator() {
+        if (!this.initialized || this.meshGen != null || this.meshCompileFailed) {
+            return;
+        }
+        var module = this.pendingMeshSpirv;
+        if (module == null) {
+            return;
+        }
+        // Pipeline create can stall the NVIDIA driver; do not do it on the title/loading screen.
+        try {
+            var mc = Minecraft.getInstance();
+            if (mc == null || mc.level == null) {
+                return;
+            }
+        } catch (Throwable t) {
+            return;
+        }
+        this.pendingMeshSpirv = null;
+        try {
+            Logger.info("Voxy (Vulkan): creating GPU mesh pipeline");
+            this.meshGen = new VkMeshGenerator(this.device, module, this.uploadStream, this.modelTables,
+                    VkContext.INSTANCE.vmaAllocator());
+            Logger.info("Voxy (Vulkan): GPU mesh generator ready");
+        } catch (Throwable t) {
+            this.meshCompileFailed = true;
+            Logger.warn("Voxy (Vulkan): GPU mesh pipeline failed, ingest still runs", t);
+            try {
+                module.free(this.device);
+            } catch (Throwable ignored) {
+            }
         }
     }
 
@@ -433,8 +494,12 @@ public final class VoxyVulkanRenderSystem {
             this.nodeCleaner.tick(cb, this.traverser.nodeBuffer(), activeHalfOffset);
             this.traverser.stage();
         }
-        this.lodGen.stage();
-        this.meshGen.stage();
+        if (this.lodGen != null) {
+            this.lodGen.stage();
+        }
+        if (this.meshGen != null) {
+            this.meshGen.stage();
+        }
 
         //Commit all staged uploads
         this.uploadStream.commit(cb);
@@ -466,8 +531,12 @@ public final class VoxyVulkanRenderSystem {
                 }
             }
         }
-        this.lodGen.dispatch(cb);
-        this.meshGen.dispatch(cb);
+        if (this.lodGen != null) {
+            this.lodGen.dispatch(cb);
+        }
+        if (this.meshGen != null) {
+            this.meshGen.dispatch(cb);
+        }
 
         this.counterTick(cb);
         this.downloadStream.commit(cb);
@@ -631,6 +700,13 @@ public final class VoxyVulkanRenderSystem {
         this.clearNodeManager();
         if (this.downloadStream != null) {
             this.downloadStream.flushWaitClear();
+        }
+        if (this.pendingMeshSpirv != null) {
+            try {
+                this.pendingMeshSpirv.free(this.device);
+            } catch (Throwable ignored) {
+            }
+            this.pendingMeshSpirv = null;
         }
         if (this.meshGen != null) {
             this.meshGen.close();
