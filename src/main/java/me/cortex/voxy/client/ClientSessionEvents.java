@@ -13,15 +13,23 @@ public class ClientSessionEvents {
     private static boolean deactivationNoticeShown = false;
     private static int startWaitTicks = 0;
     private static boolean lodHookNoticeSent = false;
+    private static int outOfWorldTicks = 0;
 
     public static void tick(Minecraft client) {
         boolean inWorld = client != null && client.level != null && client.player != null;
-        if (inWorld && !inSession) {
-            if (!readyToStartSession()) {
+        if (inWorld) {
+            outOfWorldTicks = 0;
+            if (!inSession) {
+                if (!readyToStartSession()) {
+                    return;
+                }
+                sessionStart();
+            }
+        } else if (inSession) {
+            // World join briefly nulls player/level; don't tear down the engine for that.
+            if (++outOfWorldTicks < 40) {
                 return;
             }
-            sessionStart();
-        } else if (!inWorld && inSession) {
             sessionEnd();
         }
 
@@ -111,6 +119,7 @@ public class ClientSessionEvents {
         }
         inSession = false;
         startWaitTicks = 0;
+        outOfWorldTicks = 0;
         lodHookNoticeSent = false;
         Logger.info("Voxy: session end, ingested=" + ClientChunkIngest.ingestedCount());
         ClientChunkIngest.reset();

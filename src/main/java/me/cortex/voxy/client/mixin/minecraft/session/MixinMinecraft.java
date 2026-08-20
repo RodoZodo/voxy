@@ -79,7 +79,8 @@ public class MixinMinecraft {
     @Inject(method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;ZZ)V", at = @At("TAIL"), require = 0)
     private void voxy$injectWorldClose3(CallbackInfo ci) {
         try {
-            if (ClientSessionEvents.inSession) {
+            var mc = (Minecraft) (Object) this;
+            if (ClientSessionEvents.inSession && mc.level == null) {
                 ClientSessionEvents.sessionEnd();
             }
         } catch (Throwable ignored) {
@@ -89,7 +90,8 @@ public class MixinMinecraft {
     @Inject(method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;Z)V", at = @At("TAIL"), require = 0)
     private void voxy$injectWorldClose2(Screen screen, boolean bl, CallbackInfo ci) {
         try {
-            if (ClientSessionEvents.inSession) {
+            var mc = (Minecraft) (Object) this;
+            if (ClientSessionEvents.inSession && mc.level == null) {
                 ClientSessionEvents.sessionEnd();
             }
         } catch (Throwable ignored) {

@@ -187,69 +187,18 @@ public final class VoxyVulkanRenderSystem {
             this.initialUploadPending = true;
 
             this.initialized = true;
-            this.startDeferredMeshCompile();
+            Logger.info("Voxy (Vulkan): GPU mesh.comp pipeline skipped (NVIDIA aborts vkCreateComputePipelines on it); CPU mesher will be used");
         } catch (Throwable e) {
             this.free();
             throw e;
         }
     }
 
-    /** shaderc of lod/mesh.comp on a daemon thread so the title screen can present. */
-    private void startDeferredMeshCompile() {
-        Thread t = new Thread(() -> {
-            try {
-                Logger.info("Voxy (Vulkan): compiling mesh.comp off render thread");
-                var module = VkMeshGenerator.compileMeshSpirv();
-                if (!this.initialized) {
-                    module.free(null);
-                    return;
-                }
-                this.pendingMeshSpirv = module;
-                Logger.info("Voxy (Vulkan): mesh.comp SPIR-V ready");
-            } catch (Throwable e) {
-                this.meshCompileFailed = true;
-                Logger.warn("Voxy (Vulkan): mesh.comp compile failed, GPU meshing disabled", e);
-            }
-        }, "voxy-mesh-compile");
-        t.setDaemon(true);
-        t.start();
-    }
-
     /**
-     * Create the GPU mesh pipeline on the render thread once background SPIR-V is ready.
-     * Safe to call every tick; never throws.
+     * GPU mesh.comp pipeline creation aborts NVIDIA's driver (handle-0 was fixed; SPIR-V compiles,
+     * vkCreateComputePipelines does not). CPU meshing is used instead.
      */
     public void pollDeferredMeshGenerator() {
-        if (!this.initialized || this.meshGen != null || this.meshCompileFailed) {
-            return;
-        }
-        var module = this.pendingMeshSpirv;
-        if (module == null) {
-            return;
-        }
-        // Pipeline create can stall the NVIDIA driver; do not do it on the title/loading screen.
-        try {
-            var mc = Minecraft.getInstance();
-            if (mc == null || mc.level == null) {
-                return;
-            }
-        } catch (Throwable t) {
-            return;
-        }
-        this.pendingMeshSpirv = null;
-        try {
-            Logger.info("Voxy (Vulkan): creating GPU mesh pipeline");
-            this.meshGen = new VkMeshGenerator(this.device, module, this.uploadStream, this.modelTables,
-                    VkContext.INSTANCE.vmaAllocator());
-            Logger.info("Voxy (Vulkan): GPU mesh generator ready");
-        } catch (Throwable t) {
-            this.meshCompileFailed = true;
-            Logger.warn("Voxy (Vulkan): GPU mesh pipeline failed, ingest still runs", t);
-            try {
-                module.free(this.device);
-            } catch (Throwable ignored) {
-            }
-        }
     }
 
     public boolean isInitialized() {
@@ -331,14 +280,32 @@ public final class VoxyVulkanRenderSystem {
         }
         this.nodeManager = nodeManager;
         this.activeHalf = false;
+        Logger.info("Voxy (Vulkan): attach geometry buffers sections=" + maxSections + " geomBytes=" + geometryCapacity);
         this.geometryData = new VkSectionGeometryData(VkContext.INSTANCE.vmaAllocator(), maxSections, geometryCapacity);
-        this.nodeCleaner = new VkNodeCleaner(this.device, this.compiler, nodeManager, this.uploadStream, this.downloadStream, VkContext.INSTANCE.vmaAllocator());
-        this.traverser = new VkTraverser(this.device, this.compiler, nodeManager, this.uploadStream, this.downloadStream,
-                VkContext.INSTANCE.vmaAllocator(), this.properties.isReverseZ());
-        this.sectionRenderer = new VkSectionRenderer(this.device, VkContext.INSTANCE.vmaAllocator(), this.compiler);
+        try {
+            Logger.info("Voxy (Vulkan): attach node cleaner");
+            this.nodeCleaner = new VkNodeCleaner(this.device, this.compiler, nodeManager, this.uploadStream, this.downloadStream, VkContext.INSTANCE.vmaAllocator());
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): node cleaner failed", t);
+        }
+        try {
+            Logger.info("Voxy (Vulkan): attach traverser");
+            this.traverser = new VkTraverser(this.device, this.compiler, nodeManager, this.uploadStream, this.downloadStream,
+                    VkContext.INSTANCE.vmaAllocator(), this.properties.isReverseZ());
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): traverser failed", t);
+        }
+        try {
+            Logger.info("Voxy (Vulkan): attach section renderer");
+            this.sectionRenderer = new VkSectionRenderer(this.device, VkContext.INSTANCE.vmaAllocator(), this.compiler);
+        } catch (Throwable t) {
+            Logger.warn("Voxy (Vulkan): section renderer failed", t);
+        }
         if (this.meshGen != null) {
             this.meshGen.setNodeManager(nodeManager);
         }
+        Logger.info("Voxy (Vulkan): node manager attached cleaner=" + (this.nodeCleaner != null)
+                + " traverser=" + (this.traverser != null) + " renderer=" + (this.sectionRenderer != null));
     }
 
     /** Detach + free the traversal resources (world engine torn down). Runs on the render thread. */

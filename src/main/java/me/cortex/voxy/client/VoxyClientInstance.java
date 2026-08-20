@@ -2,9 +2,9 @@ package me.cortex.voxy.client;
 
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
+import me.cortex.voxy.client.core.rendering.building.RenderGenerationService;
 import me.cortex.voxy.client.core.rendering.hierachical.AsyncNodeManager;
 import me.cortex.voxy.client.core.rendering.section.geometry.BasicAsyncGeometryManager;
-import me.cortex.voxy.client.core.vk.GpuMeshService;
 import me.cortex.voxy.client.core.vk.VoxyVulkanRenderSystem;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.StorageConfigUtil;
@@ -26,7 +26,7 @@ public class VoxyClientInstance extends VoxyInstance {
     private final Path basePath;
     private AsyncNodeManager nodeManager;
     private ModelBakerySubsystem modelBakery;
-    private GpuMeshService meshService;
+    private RenderGenerationService renderGen;
 
     public VoxyClientInstance() {
         {
@@ -79,13 +79,12 @@ public class VoxyClientInstance extends VoxyInstance {
             this.teardownNodeManager();
         }
         var rs = VoxyVulkanRenderSystem.INSTANCE;
-        if (!rs.isInitialized() || rs.getMeshGenerator() == null) {
-            Logger.info("Voxy: world engine created without GPU meshing (ingest/save still active)");
+        if (!rs.isInitialized()) {
+            Logger.info("Voxy: world engine created without GPU renderer (ingest/save still active)");
             return;
         }
-        //Model baking subsystem (CPU) - provides idMappings/metadataCache for the GPU mesher
+        Logger.info("Voxy: attaching CPU mesher + Vulkan LoD renderer");
         this.modelBakery = new ModelBakerySubsystem(world.getMapper());
-        //Seed biome entries and register callback for future biomes
         try {
             var mapper = world.getMapper();
             for (var entry : mapper.getBiomeEntries()) {
@@ -96,34 +95,31 @@ public class VoxyClientInstance extends VoxyInstance {
             Logger.warn("Failed to seed biomes for model bakery", e);
         }
 
-        //Section geometry data path: the CPU overlay manager feeds GPU uploads/metadata rewrites
-        // which the render thread applies into the VkSectionGeometryData buffers.
-        int maxSections = 1 << 20;
-        long geometryCapacity = 1L << 30;
+        // 1GiB geometry + 1M sections crashed join on 8GB NVIDIA; keep a playable cap.
+        int maxSections = 1 << 18;
+        long geometryCapacity = 256L << 20;
         var geometryManager = new BasicAsyncGeometryManager(maxSections, geometryCapacity);
-        //GpuMeshService handles dedup/priority/pre-flight and feeds VkMeshGenerator
-        this.meshService = new GpuMeshService(world, this.modelBakery.factory, this.modelBakery, rs.getMeshGenerator());
-        this.nodeManager = new AsyncNodeManager(1 << 21, geometryManager, this.meshService::enqueue);
-        //Wire the mesh generator's completion back to the node manager
-        rs.getMeshGenerator().setNodeManager(this.nodeManager);
+        this.renderGen = new RenderGenerationService(world, this.modelBakery, this.getServiceManager(), false);
+        this.nodeManager = new AsyncNodeManager(1 << 20, geometryManager, this.renderGen::enqueueTask);
+        this.renderGen.setResultConsumer(this.nodeManager::submitGeometryResult);
         world.setDirtyCallback(this.nodeManager::worldEvent);
         rs.setNodeManager(this.nodeManager, maxSections, geometryCapacity);
         rs.setModelFactory(this.modelBakery.factory);
-        rs.setMeshService(this.meshService);
         this.nodeManager.start();
+        Logger.info("Voxy: LoD renderer attached");
     }
 
     public AsyncNodeManager getNodeManager() {
         return this.nodeManager;
     }
 
-    /** If the world engine started before Vulkan pipelines, wire GPU meshing now. */
+    /** If the world engine started before Vulkan pipelines, wire LoDs now. */
     public void tryAttachRenderer() {
         if (this.nodeManager != null) {
             return;
         }
         var rs = VoxyVulkanRenderSystem.INSTANCE;
-        if (!rs.isInitialized() || rs.getMeshGenerator() == null) {
+        if (!rs.isInitialized()) {
             return;
         }
         var level = Minecraft.getInstance().level;
@@ -134,7 +130,7 @@ public class VoxyClientInstance extends VoxyInstance {
         if (engine == null) {
             return;
         }
-        Logger.info("Voxy: attaching GPU meshing to existing world engine");
+        Logger.info("Voxy: attaching LoD renderer to existing world engine");
         this.onWorldEngineCreated(engine);
     }
 
@@ -142,8 +138,8 @@ public class VoxyClientInstance extends VoxyInstance {
         return this.modelBakery;
     }
 
-    public GpuMeshService getMeshService() {
-        return this.meshService;
+    public RenderGenerationService getRenderGen() {
+        return this.renderGen;
     }
 
     @Override
@@ -155,8 +151,8 @@ public class VoxyClientInstance extends VoxyInstance {
         if (this.modelBakery != null) {
             this.modelBakery.addDebugData(debug);
         }
-        if (this.meshService != null) {
-            debug.add("MeshQ: " + this.meshService.pendingCount() + " genRev: " + (this.modelBakery != null ? this.modelBakery.factory.getBakeRevision() : 0));
+        if (this.renderGen != null) {
+            debug.add("MeshQ: " + this.renderGen.getTaskCount() + " genRev: " + (this.modelBakery != null ? this.modelBakery.factory.getBakeRevision() : 0));
         }
     }
 
@@ -169,9 +165,9 @@ public class VoxyClientInstance extends VoxyInstance {
         rs.clearNodeManager();
         this.nodeManager.stop();
         this.nodeManager = null;
-        if (this.meshService != null) {
-            this.meshService.clear();
-            this.meshService = null;
+        if (this.renderGen != null) {
+            this.renderGen.shutdown();
+            this.renderGen = null;
         }
         if (this.modelBakery != null) {
             this.modelBakery.shutdown();
