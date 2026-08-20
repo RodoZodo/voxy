@@ -1,21 +1,34 @@
 package me.cortex.voxy.client.core.vk;
 
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.vulkan.VkClearColorValue;
+import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkImageCreateInfo;
+import org.lwjgl.vulkan.VkImageMemoryBarrier;
+import org.lwjgl.vulkan.VkImageSubresourceRange;
 import org.lwjgl.vulkan.VkImageViewCreateInfo;
 import org.lwjgl.vulkan.VkPhysicalDevice;
 
+import static org.lwjgl.vulkan.VK10.VK_ACCESS_SHADER_READ_BIT;
+import static org.lwjgl.vulkan.VK10.VK_ACCESS_SHADER_WRITE_BIT;
+import static org.lwjgl.vulkan.VK10.VK_ACCESS_TRANSFER_WRITE_BIT;
 import static org.lwjgl.vulkan.VK10.VK_IMAGE_ASPECT_COLOR_BIT;
+import static org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_GENERAL;
 import static org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_UNDEFINED;
 import static org.lwjgl.vulkan.VK10.VK_IMAGE_TILING_OPTIMAL;
 import static org.lwjgl.vulkan.VK10.VK_IMAGE_TYPE_2D;
 import static org.lwjgl.vulkan.VK10.VK_IMAGE_VIEW_TYPE_2D;
+import static org.lwjgl.vulkan.VK10.VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+import static org.lwjgl.vulkan.VK10.VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 import static org.lwjgl.vulkan.VK10.VK_SAMPLE_COUNT_1_BIT;
 import static org.lwjgl.vulkan.VK10.VK_SHARING_MODE_EXCLUSIVE;
 import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 import static org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 import static org.lwjgl.vulkan.VK10.VK_SUCCESS;
+import static org.lwjgl.vulkan.VK10.vkCmdClearColorImage;
+import static org.lwjgl.vulkan.VK10.vkCmdPipelineBarrier;
 import static org.lwjgl.vulkan.VK10.vkCreateImage;
 import static org.lwjgl.vulkan.VK10.vkCreateImageView;
 import static org.lwjgl.vulkan.VK10.vkDestroyImage;
@@ -109,6 +122,39 @@ public final class VkTexture implements AutoCloseable {
 
     public int getMipLevels() {
         return this.mipLevels;
+    }
+
+    /**
+     * UNDEFINED → GENERAL, then clear to {@code value}. Must run before the image is sampled or
+     * written by a shader; sampling UNDEFINED is {@code VK_ERROR_DEVICE_LOST} on NVIDIA.
+     */
+    public void transitionAndClear(VkCommandBuffer cb, float value) {
+        try (var stack = MemoryStack.stackPush()) {
+            var range = VkImageSubresourceRange.calloc(stack);
+            range.aspectMask(VK_IMAGE_ASPECT_COLOR_BIT);
+            range.baseMipLevel(0);
+            range.levelCount(this.mipLevels);
+            range.baseArrayLayer(0);
+            range.layerCount(1);
+
+            var barrier = VkImageMemoryBarrier.calloc(1, stack);
+            barrier.sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
+            barrier.srcAccessMask(0);
+            barrier.dstAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+            barrier.oldLayout(VK_IMAGE_LAYOUT_UNDEFINED);
+            barrier.newLayout(VK_IMAGE_LAYOUT_GENERAL);
+            barrier.srcQueueFamilyIndex(-1);
+            barrier.dstQueueFamilyIndex(-1);
+            barrier.image(this.image);
+            barrier.subresourceRange(range);
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                    0, null, null, barrier);
+
+            var color = VkClearColorValue.calloc(stack);
+            color.float32(0, value);
+            vkCmdClearColorImage(cb, this.image, VK_IMAGE_LAYOUT_GENERAL, color, range);
+        }
+        VkSync.memoryBarrier(cb);
     }
 
     @Override

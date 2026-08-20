@@ -128,7 +128,8 @@ public final class VkSectionRenderer implements AutoCloseable {
         var cmdgen = compile(compiler, "lod/gl46/cmdgen.comp", Map.of(
                 "DRAW_BUFFER_BINDING","1","DRAW_COUNT_BUFFER_BINDING","2","SECTION_METADATA_BUFFER_BINDING","3",
                 "VISIBILITY_BUFFER_BINDING","4","INDIRECT_SECTION_LOOKUP_BINDING","5","POSITION_SCRATCH_BINDING","6",
-                "POSITION_SCRATCH_ACCESS","writeonly","TRANSLUCENT_DISTANCE_BUFFER_BINDING","7"));
+                "POSITION_SCRATCH_ACCESS","writeonly","TRANSLUCENT_DISTANCE_BUFFER_BINDING","7",
+                "TRANSLUCENT_WRITE_BASE","1024","TEMPORAL_OFFSET","500000"));
         this.cmdgenPipeline = VkPipelineBuilder.createCompute(device, this.cmdgenLayout, cmdgen);
         cmdgen.free(device);
 

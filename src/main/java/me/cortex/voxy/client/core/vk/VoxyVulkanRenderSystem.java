@@ -180,20 +180,11 @@ public final class VoxyVulkanRenderSystem {
                 Logger.warn("Voxy (Vulkan): HiZ unavailable, occlusion will be skipped", t);
             }
             Logger.info("Voxy (Vulkan): init LOD generator");
-            var caps = ctx.capabilities();
-            if (caps != null && !caps.shaderInt64) {
-                Logger.info("Voxy (Vulkan): GPU voxel mip skipped (shaderInt64 missing); CPU mip will be used");
-            } else {
-                try {
-                    this.lodGen = new VkLodGenerator(this.device, this.compiler, this.uploadStream, this.downloadStream, ctx.vmaAllocator());
-                } catch (Throwable t) {
-                    this.lodGen = null;
-                    Logger.warn("Voxy (Vulkan): GPU voxel mip unavailable; CPU mip will be used", t);
-                }
-            }
-            //Route LOD (voxel mip) generation through the GPU when supported
-            WorldVoxilizedSectionMipper.setMipDispatcher((section, world, mapper, onDone) ->
-                    this.lodGen != null && this.lodGen.isGpuSupported() && this.lodGen.submit(section, world, mapper, onDone));
+            // GPU voxel mip is int64 compute under an ingest flood; NVIDIA already TDR'd on mesh.comp.
+            // CPU mip is original Voxy and is safe on join.
+            Logger.info("Voxy (Vulkan): GPU voxel mip disabled (CPU mip); NVIDIA device-loss on join ingest");
+            this.lodGen = null;
+            WorldVoxilizedSectionMipper.setMipDispatcher(null);
 
             //GPU model tables only here. mesh.comp is huge (int64 greedy mesher) and compiling it
             // on the render thread freezes the Minecraft loading overlay, then Lunar/TDR kills the process.
@@ -206,6 +197,7 @@ public final class VoxyVulkanRenderSystem {
             this.initialUploadPending = true;
 
             this.initialized = true;
+            var caps = ctx.capabilities();
             String vendor = caps != null ? caps.vendorLabel() : "unknown";
             Logger.info("Voxy (Vulkan): GPU LoDs ready vendor=" + vendor
                     + " (CPU mesher + GPU draw; mesh.comp skipped — NVIDIA aborts on it)");

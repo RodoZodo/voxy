@@ -55,6 +55,7 @@ public final class VkHiZBuffer implements AutoCloseable {
     private int width;
     private int height;
     private int levels;
+    private boolean pendingClear;
 
     public VkHiZBuffer(VkDevice device, VkShaderCompiler compiler) {
         this.device = device;
@@ -108,69 +109,22 @@ public final class VkHiZBuffer implements AutoCloseable {
     }
 
     /**
-     * Build the mip chain from the given depth image view. Call between render passes on the
-     * render thread.
+     * Ensure a GENERAL, cleared HiZ texture exists for the traverser.
+     * Vanilla depth is not sampled yet: Lunar/MC 26.2 keeps that image in an attachment
+     * layout, and sampling it as GENERAL is {@code VK_ERROR_DEVICE_LOST} on NVIDIA.
+     * Cleared 0 is reverse-Z far, so occlusion is a no-op (everything visible).
      */
     public void build(VkCommandBuffer cb, long depthImageView, int srcWidth, int srcHeight) {
-        int w = Integer.highestOneBit(srcWidth);
-        int h = Integer.highestOneBit(srcHeight);
-        if (Math.max(w, h) < 128) {
-            //The chain shader needs all 7 mips (mips 1..6); below 128px there aren't enough.
-            return;
-        }
-        if (w != this.width || h != this.height) {
-            this.alloc(w, h);
+        if (this.texture == null) {
+            this.alloc(128, 128);
+            this.pendingClear = true;
         }
         if (this.texture == null) {
             return;
         }
-
-        try (var stack = MemoryStack.stackPush()) {
-            // ---- init dispatch: depth -> mip_0 ----
-            this.writeParams(stack, 1.0f / this.width, 1.0f / this.height, this.width, this.height);
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, this.initPipeline);
-
-            var depthImg = VkDescriptorImageInfo.calloc(1, stack);
-            depthImg.get(0).imageView(depthImageView).sampler(this.sampler.handle()).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
-            var mip0Img = VkDescriptorImageInfo.calloc(1, stack);
-            mip0Img.get(0).imageView(this.texture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
-            var ubo = VkDescriptorBufferInfo.calloc(1, stack);
-            ubo.get(0).buffer(this.paramsBuffer.handle()).offset(0).range(16);
-
-            var writes = VkWriteDescriptorSet.calloc(3, stack);
-            this.setImageWrite(writes.get(0), 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, depthImg);
-            this.setImageWrite(writes.get(1), 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, mip0Img);
-            this.setBufferWrite(writes.get(2), 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, ubo);
-            vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_COMPUTE, this.initLayout.handle(), 0, writes);
-
-            vkCmdDispatch(cb, (this.width + 255) / 256, this.height, 1);
-            VkSync.memoryBarrier(cb);
-
-            if (this.chainPipeline == 0L) {
-                return;
-            }
-
-            // ---- chain dispatch: mips 1..6 ----
-            this.writeParams(stack, 1.0f / this.width, 1.0f / this.height, 0, 0);
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, this.chainPipeline);
-
-            var chainMip0 = VkDescriptorImageInfo.calloc(1, stack);
-            chainMip0.get(0).imageView(this.texture.view(0)).sampler(this.sampler.handle()).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
-            var chainUbo = VkDescriptorBufferInfo.calloc(1, stack);
-            chainUbo.get(0).buffer(this.paramsBuffer.handle()).offset(0).range(16);
-
-            var chainWrites = VkWriteDescriptorSet.calloc(8, stack);
-            this.setImageWrite(chainWrites.get(0), 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, chainMip0);
-            for (int i = 1; i <= CHAIN_MIPS; i++) {
-                var img = VkDescriptorImageInfo.calloc(1, stack);
-                img.get(0).imageView(this.texture.view(i)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
-                this.setImageWrite(chainWrites.get(i), i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, img);
-            }
-            this.setBufferWrite(chainWrites.get(7), 7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, chainUbo);
-            vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_COMPUTE, this.chainLayout.handle(), 0, chainWrites);
-
-            vkCmdDispatch(cb, this.width / 64, this.height / 64, 1);
-            VkSync.memoryBarrier(cb);
+        if (this.pendingClear) {
+            this.texture.transitionAndClear(cb, 0.0f);
+            this.pendingClear = false;
         }
     }
 
