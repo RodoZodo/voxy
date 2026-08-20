@@ -66,12 +66,12 @@ public class VoxyConfigMenu implements ConfigEntryPoint {
                                         Component.translatable("voxy.config.general.useSodiumBuilder"),
                                         ()->!CFG.dontUseSodiumBuilderThreads, v->CFG.dontUseSodiumBuilderThreads=!v)
                                         .setPostChangeFlags("voxy:update_threads")
-                        ), new Group(
+                        ).setEnabler("voxy:enabled"), new Group(
                                 new BoolOption(
                                         "voxy:ingest_enabled",
                                         Component.translatable("voxy.config.general.ingest"),
                                         ()->CFG.ingestEnabled, v->CFG.ingestEnabled=v)
-                        )
-                ).setEnabler("voxy:enabled"));
+                        ).setEnabler("voxy:enabled")
+                ));
     }
 }

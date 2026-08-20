@@ -269,8 +269,15 @@ public class SodiumConfigBuilder {
 
             option.setBinding(this.setter, this.getter);
             if (this.enabler != null) {
-                var pred = this.enabler.tester;
-                option.setEnabledProvider(s->pred.test(s), this.enabler.dependencies);
+                var selfId = Identifier.parse(this.id);
+                var deps = Arrays.stream(this.enabler.dependencies)
+                        .filter(d -> !d.equals(selfId))
+                        .toArray(Identifier[]::new);
+                // Lunar/Sodium 0.9.2 throws if an option lists itself as a dependency.
+                if (deps.length > 0) {
+                    var pred = this.enabler.tester;
+                    option.setEnabledProvider(s->pred.test(s), deps);
+                }
             }
 
             option.setStorageHandler(ctx.saveHandler);

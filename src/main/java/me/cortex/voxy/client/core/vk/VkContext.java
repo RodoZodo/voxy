@@ -67,7 +67,16 @@ public final class VkContext {
         }
         try {
             var info = gpu.getDeviceInfo();
+            String preferred = "unknown";
+            try {
+                var options = Minecraft.getInstance().options;
+                if (options != null && options.preferredGraphicsBackend() != null) {
+                    preferred = String.valueOf(options.preferredGraphicsBackend().get());
+                }
+            } catch (Throwable ignored) {
+            }
             Logger.info("Voxy (Vulkan): GpuDevice backend=" + info.backendName()
+                    + " preferred=" + preferred
                     + " type=" + info.type()
                     + " renderer=" + info.name()
                     + " vendor=" + info.vendorName());
@@ -182,12 +191,9 @@ public final class VkContext {
             return null;
         }
         if (!this.isVulkanSelected()) {
-            return "Voxy requires the experimental Vulkan renderer. Minecraft is on OpenGL "
-                    + "(a previous crash resets Graphics API to Default). Set 'Graphics API' to "
-                    + "\"Prefer Vulkan (Experimental)\" in Video Settings, then restart.";
+            return "Voxy disabled: this session is OpenGL. Set Graphics API to Prefer Vulkan (Experimental) and restart.";
         }
-        return "Vulkan was selected but could not be activated (the driver fell back to OpenGL, "
-                + "or Lunar/Ichor blocked VulkanDevice capture). Voxy is disabled.";
+        return "Voxy disabled: Graphics API is Prefer Vulkan, but this session still started as OpenGL.";
     }
 
     @Nullable
