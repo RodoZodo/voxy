@@ -5,6 +5,7 @@ import me.cortex.voxy.client.core.vk.shader.VkPipelineLayout;
 import me.cortex.voxy.client.core.vk.shader.VkShaderCompiler;
 import me.cortex.voxy.client.core.vk.shader.VkShaderModule;
 import me.cortex.voxy.client.core.vk.shader.VkShaderStage;
+import me.cortex.voxy.client.core.model.ModelStore;
 import me.cortex.voxy.common.Logger;
 import org.joml.Matrix4f;
 import org.joml.Vector3i;
@@ -55,15 +56,17 @@ public final class VkSectionRenderer implements AutoCloseable {
     private long quadsTexturedPipeline;
     private final VkPipelineLayout quadsTranslucentLayout;
     private long quadsTranslucentPipeline;
-    private final VkBuffer modelBuffer;
-    private final VkBuffer modelColourBuffer;
-    private final VkTexture atlasTexture;
-    private final VkSampler atlasSampler;
+    private final ModelStore modelStore;
+    private final VkTexture depthBoundingTexture;
+    private final VkSampler depthBoundingSampler;
+    private boolean depthBoundingInitialized;
+    private VkSectionGeometryData geometryData;
     private final boolean drawIndirectCount;
     private final VkBuffer hostDrawCountBuffer;
 
-    public VkSectionRenderer(VkDevice device, long vma, VkShaderCompiler compiler) {
+    public VkSectionRenderer(VkDevice device, long vma, VkShaderCompiler compiler, ModelStore modelStore) {
         this.device = device;
+        this.modelStore = modelStore;
         var caps = VkContext.INSTANCE.capabilities();
         this.drawIndirectCount = caps != null && caps.drawIndirectCount;
         this.uniformBuffer = VkBuffer.hostVisible(vma, 1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
@@ -71,8 +74,6 @@ public final class VkSectionRenderer implements AutoCloseable {
         this.drawCountCallBuffer = VkBuffer.deviceLocal(vma, 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         this.positionScratchBuffer = VkBuffer.deviceLocal(vma, 3_200_000, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         this.distanceCountBuffer = VkBuffer.deviceLocal(vma, 404_096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        this.modelBuffer = VkBuffer.deviceLocal(vma, 64L * 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        this.modelColourBuffer = VkBuffer.deviceLocal(vma, 4L * 65536, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         if (this.drawIndirectCount) {
             this.hostDrawCountBuffer = null;
         } else {
@@ -81,8 +82,9 @@ public final class VkSectionRenderer implements AutoCloseable {
             Logger.info("Voxy (Vulkan): LoD draws use vkCmdDrawIndexedIndirect (no drawIndirectCount; typical on MoltenVK/Apple)");
         }
         var phys = VkContext.INSTANCE.physicalDevice();
-        this.atlasTexture = new VkTexture(device, phys, 256, 256, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-        this.atlasSampler = new VkSampler(device);
+        this.depthBoundingTexture = new VkTexture(device, phys, 128, 128, 1, VK_FORMAT_R32_SFLOAT,
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        this.depthBoundingSampler = new VkSampler(device);
 
         this.prepLayout = new VkPipelineLayout(device, new VkPipelineLayout.Binding[]{
                 new VkPipelineLayout.Binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
@@ -126,11 +128,14 @@ public final class VkSectionRenderer implements AutoCloseable {
                 new VkPipelineLayout.Binding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
                 new VkPipelineLayout.Binding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
         }, true);
-        var cmdgen = compile(compiler, "lod/gl46/cmdgen.comp", Map.of(
-                "DRAW_BUFFER_BINDING","1","DRAW_COUNT_BUFFER_BINDING","2","SECTION_METADATA_BUFFER_BINDING","3",
-                "VISIBILITY_BUFFER_BINDING","4","INDIRECT_SECTION_LOOKUP_BINDING","5","POSITION_SCRATCH_BINDING","6",
-                "POSITION_SCRATCH_ACCESS","writeonly","TRANSLUCENT_DISTANCE_BUFFER_BINDING","7",
-                "TRANSLUCENT_WRITE_BASE","1024","TEMPORAL_OFFSET","500000"));
+        var cmdgenDefs = new java.util.HashMap<String, String>();
+        cmdgenDefs.put("DRAW_BUFFER_BINDING","1"); cmdgenDefs.put("DRAW_COUNT_BUFFER_BINDING","2");
+        cmdgenDefs.put("SECTION_METADATA_BUFFER_BINDING","3"); cmdgenDefs.put("VISIBILITY_BUFFER_BINDING","4");
+        cmdgenDefs.put("INDIRECT_SECTION_LOOKUP_BINDING","5"); cmdgenDefs.put("POSITION_SCRATCH_BINDING","6");
+        cmdgenDefs.put("POSITION_SCRATCH_ACCESS","writeonly"); cmdgenDefs.put("TRANSLUCENT_DISTANCE_BUFFER_BINDING","7");
+        cmdgenDefs.put("TRANSLUCENT_WRITE_BASE","1024"); cmdgenDefs.put("TEMPORAL_OFFSET","500000");
+        cmdgenDefs.put("ALL_VISIBLE","");
+        var cmdgen = compile(compiler, "lod/gl46/cmdgen.comp", cmdgenDefs);
         this.cmdgenPipeline = VkPipelineBuilder.createCompute(device, this.cmdgenLayout, cmdgen);
         cmdgen.free(device);
 
@@ -201,6 +206,7 @@ public final class VkSectionRenderer implements AutoCloseable {
             tintDefs.put("QUAD_BUFFER_BINDING","1"); tintDefs.put("MODEL_BUFFER_BINDING","3"); tintDefs.put("MODEL_COLOUR_BUFFER_BINDING","4");
             tintDefs.put("POSITION_SCRATCH_BINDING","5"); tintDefs.put("LIGHTING_SAMPLER_BINDING","6");
             tintDefs.put("BLOCK_MODEL_TEXTURE_BINDING","7"); tintDefs.put("DEPTH_TEXTURE_BINDING","2");
+            tintDefs.put("USE_REVERSE_Z",""); tintDefs.put("USE_ZERO_ONE_DEPTH","");
             // Cardinal lighting tints — use defaults (1.0) if level not yet available
             tintDefs.put("NO_SHADE_FACE_TINT","1.0"); tintDefs.put("UP_FACE_TINT","1.0"); tintDefs.put("DOWN_FACE_TINT","0.9");
             tintDefs.put("Z_AXIS_FACE_TINT","0.85"); tintDefs.put("X_AXIS_FACE_TINT","0.82");
@@ -235,6 +241,7 @@ public final class VkSectionRenderer implements AutoCloseable {
             tintDefs2.put("QUAD_BUFFER_BINDING","1"); tintDefs2.put("MODEL_BUFFER_BINDING","3"); tintDefs2.put("MODEL_COLOUR_BUFFER_BINDING","4");
             tintDefs2.put("POSITION_SCRATCH_BINDING","5"); tintDefs2.put("LIGHTING_SAMPLER_BINDING","6");
             tintDefs2.put("BLOCK_MODEL_TEXTURE_BINDING","7"); tintDefs2.put("DEPTH_TEXTURE_BINDING","2");
+            tintDefs2.put("USE_REVERSE_Z",""); tintDefs2.put("USE_ZERO_ONE_DEPTH","");
             tintDefs2.put("TRANSLUCENT",""); tintDefs2.put("NO_SHADE_FACE_TINT","1.0"); tintDefs2.put("UP_FACE_TINT","1.0");
             tintDefs2.put("DOWN_FACE_TINT","0.9"); tintDefs2.put("Z_AXIS_FACE_TINT","0.85"); tintDefs2.put("X_AXIS_FACE_TINT","0.82");
             var qv2 = compile(compiler, "lod/gl46/quads3.vert", tintDefs2);
@@ -258,7 +265,19 @@ public final class VkSectionRenderer implements AutoCloseable {
     }
 
     public void buildDrawCalls(VkCommandBuffer cb, VkBuffer indirectLookupBuffer, VkBuffer visibilityBuffer, VkSectionGeometryData geometryData, Matrix4f mvp, Vector3i baseSectionPos, int frameId, org.joml.Vector3f cameraSubPos) {
+        this.geometryData = geometryData;
+        if (this.modelStore != null) {
+            this.modelStore.ensureAtlasInitialized(cb);
+        }
+        if (!this.depthBoundingInitialized) {
+            this.depthBoundingTexture.transitionAndClear(cb, 1.0f);
+            this.depthBoundingInitialized = true;
+        }
+        this.updateSceneUniform(mvp, baseSectionPos, frameId, cameraSubPos);
+        VkSync.memoryBarrier(cb);
+
         // Upload uniform (92 bytes used, 1024 allocated)
+        /*
         try (var stack = MemoryStack.stackPush()) {
             var buf = stack.calloc(1024);
             mvp.get(buf);
@@ -268,6 +287,7 @@ public final class VkSectionRenderer implements AutoCloseable {
             this.uniformBuffer.write(buf);
         }
         VkSync.memoryBarrier(cb);
+        */
 
         // Prep (1,1,1)
         try (var stack = MemoryStack.stackPush()) {
@@ -346,29 +366,50 @@ public final class VkSectionRenderer implements AutoCloseable {
         this.snapshotDrawCounts(cb);
     }
 
-    public void renderOpaque(VkCommandBuffer cb, int width, int height) {
-        if (this.quadsPipeline == 0) return;
+    public void updateSceneUniform(Matrix4f mvp, Vector3i baseSectionPos, int frameId, org.joml.Vector3f cameraSubPos) {
         try (var stack = MemoryStack.stackPush()) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this.quadsPipeline);
+            var buf = stack.calloc(1024);
+            mvp.get(buf);
+            baseSectionPos.get(64, buf);
+            buf.putInt(76, frameId & 0x7fffffff);
+            cameraSubPos.get(80, buf);
+            this.uniformBuffer.write(buf);
+        }
+    }
+
+    public void renderOpaque(VkCommandBuffer cb, int width, int height) {
+        if (this.quadsPipeline == 0 || this.geometryData == null) return;
+        try (var stack = MemoryStack.stackPush()) {
+            boolean textured = this.quadsTexturedPipeline != 0 && this.modelStore != null
+                    && this.modelStore.atlasTexture() != null && this.modelStore.sampler() != null;
+            long pipe = textured ? this.quadsTexturedPipeline : this.quadsPipeline;
+            VkPipelineLayout layout = textured ? this.quadsTexturedLayout : this.quadsLayout;
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
             var uniformInfo = VkDescriptorBufferInfo.calloc(1, stack); uniformInfo.get(0).buffer(this.uniformBuffer.handle()).offset(0).range(1024);
-            var quadInfo = VkDescriptorBufferInfo.calloc(1, stack); quadInfo.get(0).buffer(this.drawCallBuffer.handle()).offset(0).range(this.drawCallBuffer.size());
+            var quadInfo = VkDescriptorBufferInfo.calloc(1, stack); quadInfo.get(0).buffer(this.geometryData.geometryBuffer().handle()).offset(0).range(this.geometryData.geometryBuffer().size());
             var posInfo = VkDescriptorBufferInfo.calloc(1, stack); posInfo.get(0).buffer(this.positionScratchBuffer.handle()).offset(0).range(this.positionScratchBuffer.size());
-            var writes = VkWriteDescriptorSet.calloc(6, stack);
+            var writes = VkWriteDescriptorSet.calloc(textured ? 8 : 6, stack);
             writes.get(0).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(0).dstSet(0); writes.get(0).dstBinding(0); writes.get(0).descriptorCount(1); writes.get(0).descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER); writes.get(0).pBufferInfo(uniformInfo);
             writes.get(1).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(1).dstSet(0); writes.get(1).dstBinding(1); writes.get(1).descriptorCount(1); writes.get(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(1).pBufferInfo(quadInfo);
             
-            var modelInfo = VkDescriptorBufferInfo.calloc(1, stack); modelInfo.get(0).buffer(this.modelBuffer.handle()).offset(0).range(this.modelBuffer.size());
+            var modelInfo = VkDescriptorBufferInfo.calloc(1, stack); modelInfo.get(0).buffer(this.modelStore.modelBuffer().handle()).offset(0).range(this.modelStore.modelBuffer().size());
             writes.get(2).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(2).dstSet(0); writes.get(2).dstBinding(3); writes.get(2).descriptorCount(1); writes.get(2).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(2).pBufferInfo(modelInfo);
             
-            var colourInfo = VkDescriptorBufferInfo.calloc(1, stack); colourInfo.get(0).buffer(this.modelColourBuffer.handle()).offset(0).range(this.modelColourBuffer.size());
+            var colourInfo = VkDescriptorBufferInfo.calloc(1, stack); colourInfo.get(0).buffer(this.modelStore.modelColourBuffer().handle()).offset(0).range(this.modelStore.modelColourBuffer().size());
             writes.get(3).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(3).dstSet(0); writes.get(3).dstBinding(4); writes.get(3).descriptorCount(1); writes.get(3).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(3).pBufferInfo(colourInfo);
             
             writes.get(4).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(4).dstSet(0); writes.get(4).dstBinding(5); writes.get(4).descriptorCount(1); writes.get(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(4).pBufferInfo(posInfo);
             
-            var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.atlasSampler.handle()).imageView(this.atlasTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+            var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.depthBoundingSampler.handle()).imageView(this.depthBoundingTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
             writes.get(5).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(5).dstSet(0); writes.get(5).dstBinding(6); writes.get(5).descriptorCount(1); writes.get(5).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); writes.get(5).pImageInfo(samplerInfo);
             
-            vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, this.quadsLayout.handle(), 0, writes);
+            if (textured) {
+                var depthInfo = VkDescriptorImageInfo.calloc(1, stack); depthInfo.get(0).sampler(this.depthBoundingSampler.handle()).imageView(this.depthBoundingTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                writes.get(6).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(6).dstSet(0).dstBinding(2).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
+                var atlasInfo = VkDescriptorImageInfo.calloc(1, stack); atlasInfo.get(0).sampler(this.modelStore.sampler().handle()).imageView(this.modelStore.atlasTexture().view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                writes.get(7).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(7).dstSet(0).dstBinding(7).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(atlasInfo);
+            }
+            vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout.handle(), 0, writes);
             var shared = VoxyVulkanRenderSystem.INSTANCE.getSharedIndices();
             if (shared != null) {
                 vkCmdBindIndexBuffer(cb, shared.quad.handle(), 0, VK_INDEX_TYPE_UINT16);
@@ -384,31 +425,41 @@ public final class VkSectionRenderer implements AutoCloseable {
     public void renderTranslucent(VkCommandBuffer cb, int width, int height) {
         long pipe = this.quadsTranslucentPipeline != 0 ? this.quadsTranslucentPipeline : this.quadsPipeline;
         var layout = this.quadsTranslucentPipeline != 0 ? this.quadsTranslucentLayout : this.quadsLayout;
-        if (pipe == 0) return;
+        if (pipe == 0 || this.geometryData == null || this.modelStore == null) return;
         try (var stack = MemoryStack.stackPush()) {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
             var uniformInfo = VkDescriptorBufferInfo.calloc(1, stack); uniformInfo.get(0).buffer(this.uniformBuffer.handle()).offset(0).range(1024);
-            var quadInfo = VkDescriptorBufferInfo.calloc(1, stack); quadInfo.get(0).buffer(this.drawCallBuffer.handle()).offset(0).range(this.drawCallBuffer.size());
+            var quadInfo = VkDescriptorBufferInfo.calloc(1, stack); quadInfo.get(0).buffer(this.geometryData.geometryBuffer().handle()).offset(0).range(this.geometryData.geometryBuffer().size());
             var posInfo = VkDescriptorBufferInfo.calloc(1, stack); posInfo.get(0).buffer(this.positionScratchBuffer.handle()).offset(0).range(this.positionScratchBuffer.size());
             
             boolean isWhiteLayout = (layout == this.quadsLayout);
-            var writes = VkWriteDescriptorSet.calloc(isWhiteLayout ? 6 : 3, stack);
+            var writes = VkWriteDescriptorSet.calloc(isWhiteLayout ? 6 : 8, stack);
             writes.get(0).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(0).dstSet(0); writes.get(0).dstBinding(0); writes.get(0).descriptorCount(1); writes.get(0).descriptorType(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER); writes.get(0).pBufferInfo(uniformInfo);
             writes.get(1).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(1).dstSet(0); writes.get(1).dstBinding(1); writes.get(1).descriptorCount(1); writes.get(1).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(1).pBufferInfo(quadInfo);
             
             if (isWhiteLayout) {
-                var modelInfo = VkDescriptorBufferInfo.calloc(1, stack); modelInfo.get(0).buffer(this.modelBuffer.handle()).offset(0).range(this.modelBuffer.size());
+                var modelInfo = VkDescriptorBufferInfo.calloc(1, stack); modelInfo.get(0).buffer(this.modelStore.modelBuffer().handle()).offset(0).range(this.modelStore.modelBuffer().size());
                 writes.get(2).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(2).dstSet(0); writes.get(2).dstBinding(3); writes.get(2).descriptorCount(1); writes.get(2).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(2).pBufferInfo(modelInfo);
                 
-                var colourInfo = VkDescriptorBufferInfo.calloc(1, stack); colourInfo.get(0).buffer(this.modelColourBuffer.handle()).offset(0).range(this.modelColourBuffer.size());
+                var colourInfo = VkDescriptorBufferInfo.calloc(1, stack); colourInfo.get(0).buffer(this.modelStore.modelColourBuffer().handle()).offset(0).range(this.modelStore.modelColourBuffer().size());
                 writes.get(3).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(3).dstSet(0); writes.get(3).dstBinding(4); writes.get(3).descriptorCount(1); writes.get(3).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(3).pBufferInfo(colourInfo);
                 
                 writes.get(4).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(4).dstSet(0); writes.get(4).dstBinding(5); writes.get(4).descriptorCount(1); writes.get(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(4).pBufferInfo(posInfo);
                 
-                var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.atlasSampler.handle()).imageView(this.atlasTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.depthBoundingSampler.handle()).imageView(this.depthBoundingTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
                 writes.get(5).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(5).dstSet(0); writes.get(5).dstBinding(6); writes.get(5).descriptorCount(1); writes.get(5).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); writes.get(5).pImageInfo(samplerInfo);
             } else {
-                writes.get(2).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(2).dstSet(0); writes.get(2).dstBinding(5); writes.get(2).descriptorCount(1); writes.get(2).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(2).pBufferInfo(posInfo);
+                var modelInfo = VkDescriptorBufferInfo.calloc(1, stack); modelInfo.get(0).buffer(this.modelStore.modelBuffer().handle()).offset(0).range(this.modelStore.modelBuffer().size());
+                writes.get(2).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(2).dstSet(0); writes.get(2).dstBinding(3).descriptorCount(1); writes.get(2).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(2).pBufferInfo(modelInfo);
+                var colourInfo = VkDescriptorBufferInfo.calloc(1, stack); colourInfo.get(0).buffer(this.modelStore.modelColourBuffer().handle()).offset(0).range(this.modelStore.modelColourBuffer().size());
+                writes.get(3).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(3).dstSet(0); writes.get(3).dstBinding(4).descriptorCount(1); writes.get(3).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(3).pBufferInfo(colourInfo);
+                writes.get(4).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(4).dstSet(0); writes.get(4).dstBinding(5).descriptorCount(1); writes.get(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(4).pBufferInfo(posInfo);
+                var depthInfo = VkDescriptorImageInfo.calloc(1, stack); depthInfo.get(0).sampler(this.depthBoundingSampler.handle()).imageView(this.depthBoundingTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                writes.get(5).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(5).dstSet(0).dstBinding(2).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
+                var lightInfo = VkDescriptorImageInfo.calloc(1, stack); lightInfo.get(0).sampler(this.depthBoundingSampler.handle()).imageView(this.depthBoundingTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                writes.get(6).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(6).dstSet(0).dstBinding(6).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(lightInfo);
+                var atlasInfo = VkDescriptorImageInfo.calloc(1, stack); atlasInfo.get(0).sampler(this.modelStore.sampler().handle()).imageView(this.modelStore.atlasTexture().view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                writes.get(7).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(7).dstSet(0).dstBinding(7).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(atlasInfo);
             }
             
             vkCmdPushDescriptorSetKHR(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout.handle(), 0, writes);
@@ -478,10 +529,8 @@ public final class VkSectionRenderer implements AutoCloseable {
         this.drawCountCallBuffer.close();
         this.positionScratchBuffer.close();
         this.distanceCountBuffer.close();
-        this.modelBuffer.close();
-        this.modelColourBuffer.close();
-        this.atlasTexture.close();
-        this.atlasSampler.close();
+        this.depthBoundingTexture.close();
+        this.depthBoundingSampler.close();
         if (this.hostDrawCountBuffer != null) {
             this.hostDrawCountBuffer.close();
         }

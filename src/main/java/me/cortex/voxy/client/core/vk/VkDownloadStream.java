@@ -7,6 +7,8 @@ import org.lwjgl.util.vma.Vma;
 import org.lwjgl.vulkan.VkBufferCopy;
 import org.lwjgl.vulkan.VkCommandBuffer;
 import org.lwjgl.vulkan.VkDevice;
+import org.lwjgl.vulkan.VkBufferImageCopy;
+import org.lwjgl.vulkan.VkImageSubresourceRange;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -19,6 +21,9 @@ import java.util.function.Consumer;
 
 import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 import static org.lwjgl.vulkan.VK10.vkCmdCopyBuffer;
+import static org.lwjgl.vulkan.VK10.vkCmdCopyImageToBuffer;
+import static org.lwjgl.vulkan.VK10.VK_IMAGE_ASPECT_COLOR_BIT;
+import static org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 
 /**
  * GPU -> CPU readback path (port of the GL-era {@code DownloadStream}).
@@ -39,10 +44,12 @@ public final class VkDownloadStream implements AutoCloseable {
     private long allocOffset;
     private final Map<VkBuffer, List<CopyEntry>> pending = new LinkedHashMap<>();
     private final List<CallbackEntry> pendingCallbacks = new ArrayList<>();
+    private final List<ImageCopyEntry> pendingImageCopies = new ArrayList<>();
     private final Deque<Void> inFlightFrames = new LinkedList<>();
 
     private record CopyEntry(long srcOffset, long dstOffset, long size) {}
     private record CallbackEntry(long readOffset, long size, Consumer<ByteBuffer> callback) {}
+    private record ImageCopyEntry(long image, int width, int height, long dstOffset) {}
 
     public VkDownloadStream(VkDevice device, long vma) {
         this(device, vma, DEFAULT_CAPACITY);
@@ -63,9 +70,16 @@ public final class VkDownloadStream implements AutoCloseable {
         this.pendingCallbacks.add(new CallbackEntry(dst, size, callback));
     }
 
+    public void downloadImage(long image, int width, int height, Consumer<ByteBuffer> callback) {
+        long size = (long) width * height * 4L;
+        long dst = this.alloc(size);
+        this.pendingImageCopies.add(new ImageCopyEntry(image, width, height, dst));
+        this.pendingCallbacks.add(new CallbackEntry(dst, size, callback));
+    }
+
     /** Record pending copies onto the command buffer (between render passes only). */
     public void commit(VkCommandBuffer cb) {
-        if (this.pending.isEmpty()) {
+        if (this.pending.isEmpty() && this.pendingImageCopies.isEmpty()) {
             return;
         }
         try (var stack = MemoryStack.stackPush()) {
@@ -77,12 +91,22 @@ public final class VkDownloadStream implements AutoCloseable {
                 }
                 vkCmdCopyBuffer(cb, entry.getKey().handle(), this.readback.handle(), regions);
             }
+            for (var image : this.pendingImageCopies) {
+                var copy = VkBufferImageCopy.calloc(1, stack);
+                copy.bufferOffset(image.dstOffset()).bufferRowLength(0).bufferImageHeight(0);
+                copy.imageSubresource().set(VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1);
+                copy.imageOffset().set(0, 0, 0);
+                copy.imageExtent().set(image.width(), image.height(), 1);
+                vkCmdCopyImageToBuffer(cb, image.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        this.readback.handle(), copy);
+            }
         }
         VkSync.memoryBarrier(cb);
 
         List<CallbackEntry> callbacks = List.copyOf(this.pendingCallbacks);
         this.pendingCallbacks.clear();
         this.pending.clear();
+        this.pendingImageCopies.clear();
         this.inFlightFrames.addLast(null);
         RenderSystem.queueFencedTask(() -> {
             for (var c : callbacks) {
@@ -115,6 +139,7 @@ public final class VkDownloadStream implements AutoCloseable {
         }
         this.pendingCallbacks.clear();
         this.pending.clear();
+        this.pendingImageCopies.clear();
         this.inFlightFrames.clear();
         this.allocOffset = 0;
     }

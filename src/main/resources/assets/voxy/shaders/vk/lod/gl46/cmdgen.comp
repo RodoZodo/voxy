@@ -60,11 +60,16 @@ void main() {
     vec3 cornerPos = vec3(((ipos<<detail)-baseSectionPos)<<5)-cameraSubPos;
 
 
+    #ifdef ALL_VISIBLE
+    bool shouldRender = true;
+    bool renderTemporally = false;
+    #else
     uint dat = visibilityData[sectionId];
 
     //if the section was visible this frame
     bool shouldRender = (dat&0x7fffffffu) == frameId;
     bool renderTemporally = (dat&0x80000000u)==0;// means, if it was not visible last frame
+    #endif
 
 
 

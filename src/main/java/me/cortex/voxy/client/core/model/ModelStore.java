@@ -6,6 +6,7 @@ import me.cortex.voxy.client.core.vk.VkSampler;
 import me.cortex.voxy.client.core.vk.VkTexture;
 import org.lwjgl.vulkan.VkDevice;
 import org.lwjgl.vulkan.VkPhysicalDevice;
+import org.lwjgl.vulkan.VkCommandBuffer;
 
 import static org.lwjgl.vulkan.VK10.*;
 
@@ -21,6 +22,7 @@ public class ModelStore {
     private final VkTexture atlasTexture;
     private final VkSampler sampler;
     private final long vma;
+    private boolean atlasInitialized;
 
     public ModelStore(long vma, VkDevice device, VkPhysicalDevice phys) {
         this.vma = vma;
@@ -64,6 +66,13 @@ public class ModelStore {
     public VkBuffer modelColourBuffer() { return this.modelColourBuffer; }
     public VkTexture atlasTexture() { return this.atlasTexture; }
     public VkSampler sampler() { return this.sampler; }
+
+    public void ensureAtlasInitialized(VkCommandBuffer cb) {
+        if (!this.atlasInitialized && this.atlasTexture != null) {
+            this.atlasTexture.transitionAndClear(cb, 1.0f);
+            this.atlasInitialized = true;
+        }
+    }
 
     public void free() {
         if (this.modelBuffer != null) this.modelBuffer.close();

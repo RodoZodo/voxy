@@ -391,6 +391,10 @@ public class ModelFactory {
         return this.bakeRevision;
     }
 
+    public ModelStore getStore() {
+        return this.storage;
+    }
+
     public int[] getIdMappingsView() {
         return this.idMappings;
     }

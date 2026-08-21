@@ -59,6 +59,14 @@ public class SoftwareModelTextureBakery {
         this.rasterizer.setSamplerTexture(texture, width, height);
     }
 
+    public void setVulkanAtlasPixels(int[] texture, int width, int height) {
+        if (texture == null || texture.length < width * height || width <= 0 || height <= 0) {
+            throw new IllegalArgumentException("Invalid Vulkan atlas readback");
+        }
+        this.rasterizer.setSamplerTexture(texture, width, height);
+        Logger.info("Voxy: model bakery switched to Minecraft Vulkan block atlas " + width + "x" + height);
+    }
+
     private void bakeBlockModel(BlockState state) {
         if (state.getRenderShape() == RenderShape.INVISIBLE) {
             return;//Dont bake if invisible

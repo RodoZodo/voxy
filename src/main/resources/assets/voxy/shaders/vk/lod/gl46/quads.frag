@@ -15,7 +15,6 @@
 #ifndef DEPTH_TEXTURE_BINDING
 #define DEPTH_TEXTURE_BINDING 2
 #endif
-layout(set = 0, binding = BLOCK_MODEL_TEXTURE_BINDING) uniform sampler2D blockModelAtlas;
 layout(set = 0, binding = DEPTH_TEXTURE_BINDING) uniform sampler2D depthTex;
 
 //#define DEBUG_RENDER
@@ -163,7 +162,8 @@ void main() {
     }
 
     //Check the minimum bounding texture and ensure we are greater than it
-    if (DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r)) {
+    vec2 depthUv = gl_FragCoord.xy / vec2(textureSize(depthTex, 0));
+    if (DEPTH_SCALAR_COMPARE(gl_FragCoord.z, texture(depthTex, depthUv).r)) {
         discard;
         return;
     }

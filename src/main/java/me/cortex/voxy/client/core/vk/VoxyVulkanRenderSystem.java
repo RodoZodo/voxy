@@ -33,6 +33,8 @@ import org.lwjgl.vulkan.VkViewport;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
 import java.nio.ByteBuffer;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
 import static org.lwjgl.vulkan.KHRPushDescriptor.vkCmdPushDescriptorSetKHR;
 import static org.lwjgl.vulkan.VK10.VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
@@ -44,6 +46,15 @@ import static org.lwjgl.vulkan.VK10.VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 import static org.lwjgl.vulkan.VK10.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 import static org.lwjgl.vulkan.VK10.VK_FORMAT_D32_SFLOAT;
 import static org.lwjgl.vulkan.VK10.VK_FORMAT_R8G8B8A8_UNORM;
+import static org.lwjgl.vulkan.VK10.VK_IMAGE_ASPECT_COLOR_BIT;
+import static org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+import static org.lwjgl.vulkan.VK10.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+import static org.lwjgl.vulkan.VK10.VK_ACCESS_SHADER_READ_BIT;
+import static org.lwjgl.vulkan.VK10.VK_ACCESS_TRANSFER_READ_BIT;
+import static org.lwjgl.vulkan.VK10.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+import static org.lwjgl.vulkan.VK10.VK_PIPELINE_STAGE_TRANSFER_BIT;
+import static org.lwjgl.vulkan.VK10.vkCmdPipelineBarrier;
+import org.lwjgl.vulkan.VkImageMemoryBarrier;
 import static org.lwjgl.vulkan.VK10.VK_INDEX_TYPE_UINT16;
 import static org.lwjgl.vulkan.VK10.VK_PIPELINE_BIND_POINT_COMPUTE;
 import static org.lwjgl.vulkan.VK10.VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -114,6 +125,8 @@ public final class VoxyVulkanRenderSystem {
     private VkSectionRenderer sectionRenderer;
     private boolean activeHalf;
     private volatile ModelFactory modelFactory;
+    private boolean blockAtlasReadbackRequested;
+    private long blockAtlasReadbackImage;
     private volatile GpuMeshService meshService;
 
     //Frame state
@@ -311,7 +324,8 @@ public final class VoxyVulkanRenderSystem {
         }
         try {
             Logger.info("Voxy (Vulkan): attach section renderer");
-            this.sectionRenderer = new VkSectionRenderer(this.device, VkContext.INSTANCE.vmaAllocator(), this.compiler);
+            this.sectionRenderer = new VkSectionRenderer(this.device, VkContext.INSTANCE.vmaAllocator(), this.compiler,
+                    this.modelFactory != null ? this.modelFactory.getStore() : null);
         } catch (Throwable t) {
             Logger.warn("Voxy (Vulkan): section renderer failed", t);
         }
@@ -426,14 +440,23 @@ public final class VoxyVulkanRenderSystem {
             return;
         }
 
-        this.recordDemo(cb, camera, width, height);
-
         // GPU LoD terrain (CPU-meshed geometry drawn with Vulkan). Original Voxy architecture.
         if (VoxyConfig.CONFIG.isRenderingEnabled() && this.sectionRenderer != null) {
             try {
                 int w = mc.getWindow().getWidth();
                 int h = mc.getWindow().getHeight();
                 if (w > 0 && h > 0) {
+                    int bx = Math.floorDiv((int) Math.floor(camera.pos.x), 32);
+                    int by = Math.floorDiv((int) Math.floor(camera.pos.y), 32);
+                    int bz = Math.floorDiv((int) Math.floor(camera.pos.z), 32);
+                    var drawBase = new Vector3i(bx, by, bz);
+                    var drawSub = new org.joml.Vector3f(
+                            (float) (camera.pos.x - bx * 32.0),
+                            (float) (camera.pos.y - by * 32.0),
+                            (float) (camera.pos.z - bz * 32.0));
+                    this.sectionRenderer.updateSceneUniform(
+                            new Matrix4f(camera.projectionMatrix).mul(camera.viewRotationMatrix),
+                            drawBase, this.nodeCleaner != null ? this.nodeCleaner.getVisibilityId() : 0, drawSub);
                     this.sectionRenderer.renderOpaque(cb, w, h);
                     this.sectionRenderer.renderTranslucent(cb, w, h);
                 }
@@ -498,12 +521,16 @@ public final class VoxyVulkanRenderSystem {
         //Model tables: sync from factory (CPU copy) so the upcoming upload has fresh data
         if (this.modelFactory != null && this.modelTables != null) {
             this.modelTables.syncFromFactory(this.modelFactory);
+            if (cb != null && this.modelFactory.getStore() != null) {
+                this.modelFactory.getStore().ensureAtlasInitialized(cb);
+            }
             // Atlas upload needs the command buffer (buffer->image) — use the cb overload when available
             if (cb != null) {
                 this.modelFactory.processUploads(cb);
             } else {
                 this.modelFactory.processUploads();
             }
+            this.requestBlockAtlasReadback(cb);
         }
         //Mesh service: turn queued section positions into GPU mesh jobs (pre-flight + submit)
         if (this.meshService != null) {
@@ -544,7 +571,10 @@ public final class VoxyVulkanRenderSystem {
             if (VoxyConfig.CONFIG.isRenderingEnabled() && this.sectionRenderer != null && this.traverser != null && this.geometryData != null && camera != null) {
                 try {
                     var mvp = new Matrix4f(camera.projectionMatrix).mul(camera.viewRotationMatrix);
-                    var basePos = new Vector3i((int) (camera.pos.x) >> 5, (int) (camera.pos.y) >> 5, (int) (camera.pos.z) >> 5);
+                    var basePos = new Vector3i(
+                            Math.floorDiv((int) Math.floor(camera.pos.x), 32),
+                            Math.floorDiv((int) Math.floor(camera.pos.y), 32),
+                            Math.floorDiv((int) Math.floor(camera.pos.z), 32));
                     var camSub = new org.joml.Vector3f((float) (camera.pos.x - (basePos.x << 5)), (float) (camera.pos.y - (basePos.y << 5)), (float) (camera.pos.z - (basePos.z << 5)));
                     this.sectionRenderer.buildDrawCalls(cb, this.traverser.getRenderList(), this.nodeCleaner.visibilityBuffer(), this.geometryData, mvp, basePos, this.nodeCleaner.getVisibilityId(), camSub);
                 } catch (Exception e) {
@@ -559,8 +589,8 @@ public final class VoxyVulkanRenderSystem {
             this.meshGen.dispatch(cb);
         }
 
-        this.counterTick(cb);
         this.downloadStream.commit(cb);
+        this.restoreBlockAtlasLayout(cb);
 
         if (this.nodeManager != null) {
             this.activeHalf = !this.activeHalf;
@@ -579,6 +609,127 @@ public final class VoxyVulkanRenderSystem {
         }
         var camera = mc.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
         return camera.initialized ? camera : null;
+    }
+
+    private void requestBlockAtlasReadback(VkCommandBuffer cb) {
+        if (this.blockAtlasReadbackRequested || this.downloadStream == null || cb == null || this.modelFactory == null) {
+            return;
+        }
+        this.blockAtlasReadbackRequested = true;
+        try {
+            Object textureManager = Minecraft.getInstance().getTextureManager();
+            Object atlas = textureManager.getClass().getMethod("getTexture",
+                    net.minecraft.resources.Identifier.class).invoke(textureManager,
+                    net.minecraft.resources.Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png"));
+            Object gpuTexture = unwrapTexture(atlas);
+            long image = findLong(gpuTexture, "image", "vkImage", "handle");
+            int width = findInt(gpuTexture, "width", "getWidth");
+            int height = findInt(gpuTexture, "height", "getHeight");
+            if (image == 0L || width <= 0 || height <= 0 || ((long) width * height * 4L) > 32L * 1024 * 1024) {
+                throw new IllegalStateException("Minecraft Vulkan atlas handle/dimensions unavailable: "
+                        + image + " " + width + "x" + height);
+            }
+            try (var stack = MemoryStack.stackPush()) {
+                var range = org.lwjgl.vulkan.VkImageSubresourceRange.calloc(stack)
+                        .aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1)
+                        .baseArrayLayer(0).layerCount(1);
+                var barrier = VkImageMemoryBarrier.calloc(1, stack).sType(org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+                        .srcAccessMask(VK_ACCESS_SHADER_READ_BIT).dstAccessMask(VK_ACCESS_TRANSFER_READ_BIT)
+                        .oldLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).newLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+                        .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(image).subresourceRange(range);
+                vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0, null, null, barrier);
+            }
+            this.downloadStream.downloadImage(image, width, height, bytes -> {
+                int[] pixels = new int[width * height];
+                for (int i = 0; i < pixels.length; i++) {
+                    int p = i * 4;
+                    pixels[i] = ((bytes.get(p) & 0xff) << 24)
+                            | ((bytes.get(p + 1) & 0xff) << 16)
+                            | ((bytes.get(p + 2) & 0xff) << 8)
+                            | (bytes.get(p + 3) & 0xff);
+                }
+                this.modelFactory.bakery2.setVulkanAtlasPixels(pixels, width, height);
+            });
+            this.blockAtlasReadbackImage = image;
+            Logger.info("Voxy: scheduled Minecraft block-atlas Vulkan readback " + width + "x" + height);
+        } catch (Throwable t) {
+            Logger.warn("Voxy: Minecraft block-atlas Vulkan readback unavailable; using white bake fallback", t);
+        }
+    }
+
+    private void restoreBlockAtlasLayout(VkCommandBuffer cb) {
+        if (this.blockAtlasReadbackImage == 0L) {
+            return;
+        }
+        try (var stack = MemoryStack.stackPush()) {
+            var range = org.lwjgl.vulkan.VkImageSubresourceRange.calloc(stack)
+                    .aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1)
+                    .baseArrayLayer(0).layerCount(1);
+            var barrier = VkImageMemoryBarrier.calloc(1, stack)
+                    .sType(org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+                    .srcAccessMask(VK_ACCESS_TRANSFER_READ_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT)
+                    .oldLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).newLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                    .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(this.blockAtlasReadbackImage)
+                    .subresourceRange(range);
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, null, null, barrier);
+        }
+        this.blockAtlasReadbackImage = 0L;
+    }
+
+    private static Object unwrapTexture(Object value) throws Exception {
+        Object current = value;
+        for (int i = 0; i < 4 && current != null; i++) {
+            Object next = invokeNoArg(current, "getTexture", "texture", "gpuTexture", "getGpuTexture");
+            if (next == null || next == current) {
+                return current;
+            }
+            current = next;
+        }
+        return current;
+    }
+
+    private static long findLong(Object value, String... names) throws Exception {
+        Object result = findMember(value, names);
+        return result instanceof Number n ? n.longValue() : 0L;
+    }
+
+    private static int findInt(Object value, String... names) throws Exception {
+        Object result = findMember(value, names);
+        return result instanceof Number n ? n.intValue() : 0;
+    }
+
+    private static Object findMember(Object value, String... names) throws Exception {
+        if (value == null) return null;
+        Class<?> type = value.getClass();
+        for (String name : names) {
+            try {
+                Object result = invokeNoArg(value, name);
+                if (result != null) return result;
+            } catch (NoSuchMethodException ignored) {
+            }
+            for (Class<?> c = type; c != null; c = c.getSuperclass()) {
+                try {
+                    Field field = c.getDeclaredField(name);
+                    field.setAccessible(true);
+                    return field.get(value);
+                } catch (NoSuchFieldException ignored) {
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Object invokeNoArg(Object value, String... names) throws Exception {
+        for (String name : names) {
+            try {
+                Method method = value.getClass().getMethod(name);
+                return method.invoke(value);
+            } catch (NoSuchMethodException ignored) {
+            }
+        }
+        throw new NoSuchMethodException(value.getClass().getName());
     }
 
     private int halfNodeCount() {
