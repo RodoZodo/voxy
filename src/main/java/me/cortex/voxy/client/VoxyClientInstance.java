@@ -111,6 +111,7 @@ public class VoxyClientInstance extends VoxyInstance {
         this.renderGen.setResultConsumer(this.nodeManager::submitGeometryResult);
         world.setDirtyCallback(this.nodeManager::worldEvent);
         rs.setModelFactory(this.modelBakery.factory);
+        rs.setModelBakery(this.modelBakery);
         rs.setNodeManager(this.nodeManager, maxSections, geometryCapacity);
         this.nodeManager.start();
         Logger.info("Voxy: LoD renderer attached");

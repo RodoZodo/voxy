@@ -152,6 +152,9 @@ public final class VkTexture implements AutoCloseable {
 
             var color = VkClearColorValue.calloc(stack);
             color.float32(0, value);
+            color.float32(1, value);
+            color.float32(2, value);
+            color.float32(3, value);
             vkCmdClearColorImage(cb, this.image, VK_IMAGE_LAYOUT_GENERAL, color, range);
         }
         VkSync.memoryBarrier(cb);

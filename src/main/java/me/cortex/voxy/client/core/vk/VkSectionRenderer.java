@@ -61,11 +61,20 @@ public final class VkSectionRenderer implements AutoCloseable {
     private final ModelStore modelStore;
     private final VkTexture depthBoundingTexture;
     private final VkSampler depthBoundingSampler;
+    private final VkTexture lightmapTexture;
+    private final VkSampler lightmapSampler;
+    private final VkBuffer lightmapUploadBuffer;
+    private volatile byte[] pendingLightmapPixels;
+    private volatile int pendingLightmapWidth;
+    private volatile int pendingLightmapHeight;
     private boolean depthBoundingInitialized;
+    private boolean lightmapInitialized;
     private VkSectionGeometryData geometryData;
     private final boolean drawIndirectCount;
     private final VkBuffer hostDrawCountBuffer;
     private boolean debugStateDumpRequested;
+    private int debugStateDumpCount;
+    private long debugLastDumpFrame = Long.MIN_VALUE;
 
     public VkSectionRenderer(VkDevice device, long vma, VkShaderCompiler compiler, ModelStore modelStore) {
         this.device = device;
@@ -88,6 +97,11 @@ public final class VkSectionRenderer implements AutoCloseable {
         this.depthBoundingTexture = new VkTexture(device, phys, 128, 128, 1, VK_FORMAT_R32_SFLOAT,
                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
         this.depthBoundingSampler = new VkSampler(device);
+        this.lightmapTexture = new VkTexture(device, phys, 16, 16, 1, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+        this.lightmapSampler = new VkSampler(device);
+        this.lightmapUploadBuffer = VkBuffer.hostVisible(vma, 16L * 16L * 4L, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        this.lightmapUploadBuffer.mapPersistent();
 
         this.prepLayout = new VkPipelineLayout(device, new VkPipelineLayout.Binding[]{
                 new VkPipelineLayout.Binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT),
@@ -282,6 +296,11 @@ public final class VkSectionRenderer implements AutoCloseable {
             this.depthBoundingTexture.transitionAndClear(cb, 1.0f);
             this.depthBoundingInitialized = true;
         }
+        if (!this.lightmapInitialized) {
+            this.lightmapTexture.transitionAndClear(cb, 1.0f);
+            this.lightmapInitialized = true;
+        }
+        this.uploadPendingLightmap(cb);
         this.updateSceneUniform(mvp, baseSectionPos, frameId, cameraSubPos);
         VkSync.memoryBarrier(cb);
         this.positionScratchBuffer.fill(cb, 399996L * 8L, 3L * 8L, 0);
@@ -411,7 +430,7 @@ public final class VkSectionRenderer implements AutoCloseable {
             
             writes.get(4).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(4).dstSet(0); writes.get(4).dstBinding(5); writes.get(4).descriptorCount(1); writes.get(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(4).pBufferInfo(posInfo);
             
-            var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.depthBoundingSampler.handle()).imageView(this.depthBoundingTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+            var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.lightmapSampler.handle()).imageView(this.lightmapTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
             writes.get(5).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(5).dstSet(0); writes.get(5).dstBinding(6); writes.get(5).descriptorCount(1); writes.get(5).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); writes.get(5).pImageInfo(samplerInfo);
             
             if (textured) {
@@ -457,7 +476,7 @@ public final class VkSectionRenderer implements AutoCloseable {
                 
                 writes.get(4).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(4).dstSet(0); writes.get(4).dstBinding(5); writes.get(4).descriptorCount(1); writes.get(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(4).pBufferInfo(posInfo);
                 
-                var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.depthBoundingSampler.handle()).imageView(this.depthBoundingTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                var samplerInfo = VkDescriptorImageInfo.calloc(1, stack); samplerInfo.get(0).sampler(this.lightmapSampler.handle()).imageView(this.lightmapTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
                 writes.get(5).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(5).dstSet(0); writes.get(5).dstBinding(6); writes.get(5).descriptorCount(1); writes.get(5).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER); writes.get(5).pImageInfo(samplerInfo);
             } else {
                 var modelInfo = VkDescriptorBufferInfo.calloc(1, stack); modelInfo.get(0).buffer(this.modelStore.modelBuffer().handle()).offset(0).range(this.modelStore.modelBuffer().size());
@@ -467,7 +486,7 @@ public final class VkSectionRenderer implements AutoCloseable {
                 writes.get(4).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(4).dstSet(0); writes.get(4).dstBinding(5).descriptorCount(1); writes.get(4).descriptorType(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); writes.get(4).pBufferInfo(posInfo);
                 var depthInfo = VkDescriptorImageInfo.calloc(1, stack); depthInfo.get(0).sampler(this.depthBoundingSampler.handle()).imageView(this.depthBoundingTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
                 writes.get(5).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(5).dstSet(0).dstBinding(2).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(depthInfo);
-                var lightInfo = VkDescriptorImageInfo.calloc(1, stack); lightInfo.get(0).sampler(this.depthBoundingSampler.handle()).imageView(this.depthBoundingTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
+                var lightInfo = VkDescriptorImageInfo.calloc(1, stack); lightInfo.get(0).sampler(this.lightmapSampler.handle()).imageView(this.lightmapTexture.view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
                 writes.get(6).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(6).dstSet(0).dstBinding(6).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(lightInfo);
                 var atlasInfo = VkDescriptorImageInfo.calloc(1, stack); atlasInfo.get(0).sampler(this.modelStore.sampler().handle()).imageView(this.modelStore.atlasTexture().view(0)).imageLayout(VK_IMAGE_LAYOUT_GENERAL);
                 writes.get(7).sType(VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET); writes.get(7).dstSet(0).dstBinding(7).descriptorCount(1).descriptorType(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER).pImageInfo(atlasInfo);
@@ -486,6 +505,56 @@ public final class VkSectionRenderer implements AutoCloseable {
         }
     }
 
+    public void setLightmapPixels(byte[] pixels, int width, int height) {
+        if (pixels == null || width != 16 || height != 16 || pixels.length < 16 * 16 * 4) {
+            return;
+        }
+        this.pendingLightmapWidth = width;
+        this.pendingLightmapHeight = height;
+        this.pendingLightmapPixels = java.util.Arrays.copyOf(pixels, 16 * 16 * 4);
+    }
+
+    private void uploadPendingLightmap(VkCommandBuffer cb) {
+        byte[] pixels = this.pendingLightmapPixels;
+        if (pixels == null) {
+            return;
+        }
+        this.pendingLightmapPixels = null;
+        long address = this.lightmapUploadBuffer.mapPersistent();
+        ByteBuffer source = MemoryUtil.memAlloc(pixels.length);
+        try {
+            source.put(pixels).flip();
+            MemoryUtil.memCopy(MemoryUtil.memAddress(source), address, pixels.length);
+        } finally {
+            MemoryUtil.memFree(source);
+        }
+        try (var stack = MemoryStack.stackPush()) {
+            var range = org.lwjgl.vulkan.VkImageSubresourceRange.calloc(stack)
+                    .aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1)
+                    .baseArrayLayer(0).layerCount(1);
+            var barrier = org.lwjgl.vulkan.VkImageMemoryBarrier.calloc(1, stack)
+                    .sType(VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+                    .srcAccessMask(VK_ACCESS_SHADER_READ_BIT).dstAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT)
+                    .oldLayout(VK_IMAGE_LAYOUT_GENERAL).newLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+                    .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(this.lightmapTexture.image())
+                    .subresourceRange(range);
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    0, null, null, barrier);
+            var copy = org.lwjgl.vulkan.VkBufferImageCopy.calloc(1, stack);
+            copy.bufferOffset(0).bufferRowLength(0).bufferImageHeight(0);
+            copy.imageSubresource().set(VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1);
+            copy.imageOffset().set(0, 0, 0);
+            copy.imageExtent().set(16, 16, 1);
+            vkCmdCopyBufferToImage(cb, this.lightmapUploadBuffer.handle(), this.lightmapTexture.image(),
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, copy);
+            barrier.srcAccessMask(VK_ACCESS_TRANSFER_WRITE_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT)
+                    .oldLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL).newLayout(VK_IMAGE_LAYOUT_GENERAL);
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+                    0, null, null, barrier);
+        }
+        VkSync.memoryBarrier(cb);
+    }
+
     private void snapshotDrawCounts(VkCommandBuffer cb) {
         if (this.drawIndirectCount || this.hostDrawCountBuffer == null) {
             return;
@@ -497,41 +566,57 @@ public final class VkSectionRenderer implements AutoCloseable {
         }
     }
 
-    /** Schedule one bounded GPU state snapshot for diagnosing indirect draw corruption. */
-    public void dumpDebugState(VkDownloadStream downloads, VkBuffer renderList) {
-        if (this.debugStateDumpRequested || downloads == null || renderList == null || this.geometryData == null) {
+    public boolean hasOpaqueDraws() {
+        if (this.drawIndirectCount || this.hostDrawCountBuffer == null) {
+            return true;
+        }
+        long addr = this.hostDrawCountBuffer.mapPersistent();
+        return MemoryUtil.memGetInt(addr + 12) > 0;
+    }
+
+    /** Schedule bounded GPU state snapshots for diagnosing indirect draw corruption. */
+    public void dumpDebugState(VkDownloadStream downloads, VkBuffer renderList, long frameId) {
+        if (downloads == null || renderList == null || this.geometryData == null
+                || this.debugStateDumpCount >= 3
+                || frameId - this.debugLastDumpFrame < 120) {
             return;
         }
         this.debugStateDumpRequested = true;
-        downloads.download(renderList, 0, 17L * 4L, VkSectionRenderer::logRenderList);
-        downloads.download(this.drawCallBuffer, 0, 8L * 20L, VkSectionRenderer::logCommands);
+        this.debugStateDumpCount++;
+        this.debugLastDumpFrame = frameId;
+        int dumpNumber = this.debugStateDumpCount;
+        downloads.download(renderList, 0, 17L * 4L, bytes -> logRenderList(bytes, frameId, dumpNumber));
+        downloads.download(this.drawCallBuffer, 0, 8L * 20L, bytes -> logCommands(bytes, frameId, dumpNumber));
         downloads.download(this.drawCountCallBuffer, 0, 32, bytes -> {
             var b = bytes.order(ByteOrder.nativeOrder());
-            Logger.info("Voxy (Vulkan) debug draw counters dispatch=" + b.getInt(0)
+            Logger.info("Voxy (Vulkan) debug[" + dumpNumber + " frame=" + frameId + "] draw counters dispatch=" + b.getInt(0)
                     + " opaque=" + b.getInt(12) + " translucent=" + b.getInt(16)
                     + " temporal=" + b.getInt(20));
         });
         downloads.download(this.positionScratchBuffer, 0, 8L * 8L,
-                bytes -> logPositions(bytes));
+                bytes -> logPositions(bytes, frameId, dumpNumber));
         downloads.download(this.positionScratchBuffer, 399996L * 8L, 3L * 8L,
-                VkSectionRenderer::logDrawParameterProbe);
+                bytes -> logDrawParameterProbe(bytes, frameId, dumpNumber));
         downloads.download(this.geometryData.metadataBuffer(), 0, 16L * VkSectionGeometryData.SECTION_METADATA_SIZE,
-                bytes -> logMetadata(bytes));
+                bytes -> logMetadata(bytes, frameId, dumpNumber));
+        this.debugStateDumpRequested = false;
     }
 
-    private static void logRenderList(ByteBuffer bytes) {
+    private static void logRenderList(ByteBuffer bytes, long frameId, int dumpNumber) {
         var b = bytes.order(ByteOrder.nativeOrder());
         int count = b.getInt(0);
-        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug render list count=").append(count);
+        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug[").append(dumpNumber).append(" frame=").append(frameId)
+                .append("] render list count=").append(count);
         for (int i = 0; i < 16; i++) {
             out.append(" [").append(i).append('=').append(Integer.toUnsignedString(b.getInt((i + 1) * 4))).append(']');
         }
         Logger.info(out.toString());
     }
 
-    private static void logCommands(ByteBuffer bytes) {
+    private static void logCommands(ByteBuffer bytes, long frameId, int dumpNumber) {
         var b = bytes.order(ByteOrder.nativeOrder());
-        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug commands");
+        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug[").append(dumpNumber).append(" frame=").append(frameId)
+                .append("] commands");
         for (int i = 0; i < 8; i++) {
             int p = i * 20;
             out.append(" [").append(i).append(": count=").append(b.getInt(p))
@@ -543,9 +628,10 @@ public final class VkSectionRenderer implements AutoCloseable {
         Logger.info(out.toString());
     }
 
-    private static void logPositions(ByteBuffer bytes) {
+    private static void logPositions(ByteBuffer bytes, long frameId, int dumpNumber) {
         var b = bytes.order(ByteOrder.nativeOrder());
-        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug positions");
+        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug[").append(dumpNumber).append(" frame=").append(frameId)
+                .append("] positions");
         for (int i = 0; i < 8; i++) {
             int p = i * 8;
             out.append(" [").append(i).append(": ").append(Integer.toUnsignedString(b.getInt(p)))
@@ -554,17 +640,18 @@ public final class VkSectionRenderer implements AutoCloseable {
         Logger.info(out.toString());
     }
 
-    private static void logDrawParameterProbe(ByteBuffer bytes) {
+    private static void logDrawParameterProbe(ByteBuffer bytes, long frameId, int dumpNumber) {
         var b = bytes.order(ByteOrder.nativeOrder());
-        Logger.info("Voxy (Vulkan) debug draw-parameter probe maxBaseInstance="
+        Logger.info("Voxy (Vulkan) debug[" + dumpNumber + " frame=" + frameId + "] draw-parameter probe maxBaseInstance="
                 + Integer.toUnsignedString(b.getInt(0))
                 + " maxVertexIndex=" + Integer.toUnsignedString(b.getInt(8))
                 + " invocations=" + Integer.toUnsignedString(b.getInt(16)));
     }
 
-    private static void logMetadata(ByteBuffer bytes) {
+    private static void logMetadata(ByteBuffer bytes, long frameId, int dumpNumber) {
         var b = bytes.order(ByteOrder.nativeOrder());
-        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug metadata");
+        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug[").append(dumpNumber).append(" frame=").append(frameId)
+                .append("] metadata");
         for (int i = 0; i < 4; i++) {
             int p = i * VkSectionGeometryData.SECTION_METADATA_SIZE;
             out.append(" [").append(i)
@@ -625,6 +712,9 @@ public final class VkSectionRenderer implements AutoCloseable {
         this.distanceCountBuffer.close();
         this.depthBoundingTexture.close();
         this.depthBoundingSampler.close();
+        this.lightmapTexture.close();
+        this.lightmapSampler.close();
+        this.lightmapUploadBuffer.close();
         if (this.hostDrawCountBuffer != null) {
             this.hostDrawCountBuffer.close();
         }

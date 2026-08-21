@@ -1087,6 +1087,36 @@ public class ModelFactory {
         return this.modelTexture2id.size();
     }
 
+    /**
+     * Rebuild all known models after the rasterizer's source atlas changes. The Vulkan path may
+     * receive the Minecraft atlas asynchronously, after some models were baked against the white
+     * bootstrap texture.
+     */
+    public void rebakeKnownModelsAfterAtlasReadback() {
+        int[] known = new int[this.idMappings.length];
+        int count = 0;
+        for (int blockId = 0; blockId < this.idMappings.length; blockId++) {
+            if (this.idMappings[blockId] != -1) {
+                known[count++] = blockId;
+            }
+        }
+        this.modelTexture2id.clear();
+        Arrays.fill(this.idMappings, -1);
+        Arrays.fill(this.metadataCache, 0L);
+        Arrays.fill(this.fluidStateLUT, -1);
+        this.modelsRequiringBiomeColours.clear();
+        this.blockStatesInFlightLock.lock();
+        try {
+            this.blockStatesInFlight.clear();
+        } finally {
+            this.blockStatesInFlightLock.unlock();
+        }
+        for (int i = 0; i < count; i++) {
+            this.addEntry(known[i]);
+        }
+        Logger.info("Voxy: queued " + count + " model re-bakes after Vulkan atlas readback");
+    }
+
     public int getInflightCount() {
         //TODO replace all of this with an atomic?
         int size = this.blockStatesInFlight.size();

@@ -92,6 +92,17 @@ public class ModelBakerySubsystem {
         LockSupport.unpark(this.processingThread);
     }
 
+    public void rebakeKnownModelsAfterAtlasReadback() {
+        this.seenIdsLock.lock();
+        try {
+            this.seenIds.clear();
+        } finally {
+            this.seenIdsLock.unlock();
+        }
+        this.factory.rebakeKnownModelsAfterAtlasReadback();
+        LockSupport.unpark(this.processingThread);
+    }
+
     public void addBiome(Mapper.BiomeEntry biomeEntry) {
         this.factory.addBiome(biomeEntry);
         LockSupport.unpark(this.processingThread);

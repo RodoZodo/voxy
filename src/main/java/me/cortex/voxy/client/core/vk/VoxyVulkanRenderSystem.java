@@ -10,6 +10,7 @@ import com.mojang.blaze3d.vulkan.VulkanRenderPass;
 import me.cortex.voxy.client.VoxyClient;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.model.ModelFactory;
+import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.client.core.rendering.RenderDistanceTracker;
 import me.cortex.voxy.client.core.rendering.hierachical.AsyncNodeManager;
 import me.cortex.voxy.client.core.vk.shader.VkPipelineBuilder;
@@ -125,8 +126,13 @@ public final class VoxyVulkanRenderSystem {
     private VkSectionRenderer sectionRenderer;
     private boolean activeHalf;
     private volatile ModelFactory modelFactory;
+    private volatile ModelBakerySubsystem modelBakery;
+    private boolean atlasRebakeRequested;
     private boolean blockAtlasReadbackRequested;
     private long blockAtlasReadbackImage;
+    private boolean lightmapReadbackRequested;
+    private long lightmapReadbackImage;
+    private long lightmapReadbackFrames;
     private static boolean atlasHandleFallbackLogged;
     private volatile GpuMeshService meshService;
 
@@ -254,8 +260,16 @@ public final class VoxyVulkanRenderSystem {
         this.modelFactory = factory;
     }
 
+    public void setModelBakery(ModelBakerySubsystem bakery) {
+        this.modelBakery = bakery;
+    }
+
     public void clearModelFactory() {
         this.modelFactory = null;
+        this.modelBakery = null;
+        this.atlasRebakeRequested = false;
+        this.lightmapReadbackRequested = false;
+        this.lightmapReadbackImage = 0L;
     }
 
     public void setMeshService(GpuMeshService service) {
@@ -492,6 +506,7 @@ public final class VoxyVulkanRenderSystem {
             return;
         }
         this.terrainPassActive = false;
+        this.lightmapReadbackFrames++;
 
         var mc = Minecraft.getInstance();
         var camera = this.currentCamera();
@@ -532,6 +547,7 @@ public final class VoxyVulkanRenderSystem {
                 this.modelFactory.processUploads();
             }
             this.requestBlockAtlasReadback(cb);
+            this.requestLightmapReadback(cb);
         }
         //Mesh service: turn queued section positions into GPU mesh jobs (pre-flight + submit)
         if (this.meshService != null) {
@@ -578,7 +594,9 @@ public final class VoxyVulkanRenderSystem {
                             Math.floorDiv((int) Math.floor(camera.pos.z), 32));
                     var camSub = new org.joml.Vector3f((float) (camera.pos.x - (basePos.x << 5)), (float) (camera.pos.y - (basePos.y << 5)), (float) (camera.pos.z - (basePos.z << 5)));
                     this.sectionRenderer.buildDrawCalls(cb, this.traverser.getRenderList(), this.nodeCleaner.visibilityBuffer(), this.geometryData, mvp, basePos, this.nodeCleaner.getVisibilityId(), camSub);
-                    this.sectionRenderer.dumpDebugState(this.downloadStream, this.traverser.getRenderList());
+                    if (this.vertexDataReady && this.sectionRenderer.hasOpaqueDraws()) {
+                        this.sectionRenderer.dumpDebugState(this.downloadStream, this.traverser.getRenderList(), this.lightmapReadbackFrames);
+                    }
                 } catch (Exception e) {
                     // Section renderer not yet fully wired (e.g. missing geometry) — skip this frame
                 }
@@ -593,6 +611,7 @@ public final class VoxyVulkanRenderSystem {
 
         this.downloadStream.commit(cb);
         this.restoreBlockAtlasLayout(cb);
+        this.restoreLightmapLayout(cb);
 
         if (this.nodeManager != null) {
             this.activeHalf = !this.activeHalf;
@@ -652,6 +671,10 @@ public final class VoxyVulkanRenderSystem {
                             | (bytes.get(p + 3) & 0xff);
                 }
                 this.modelFactory.bakery2.setVulkanAtlasPixels(pixels, width, height);
+                if (!this.atlasRebakeRequested && this.modelBakery != null) {
+                    this.atlasRebakeRequested = true;
+                    this.modelBakery.rebakeKnownModelsAfterAtlasReadback();
+                }
             });
             this.blockAtlasReadbackImage = image;
             Logger.info("Voxy: scheduled Minecraft block-atlas Vulkan readback " + width + "x" + height);
@@ -678,6 +701,69 @@ public final class VoxyVulkanRenderSystem {
                     0, null, null, barrier);
         }
         this.blockAtlasReadbackImage = 0L;
+    }
+
+    private void requestLightmapReadback(VkCommandBuffer cb) {
+        if (this.lightmapReadbackRequested || this.lightmapReadbackFrames % 20 != 0
+                || this.downloadStream == null || cb == null || this.sectionRenderer == null) {
+            return;
+        }
+        this.lightmapReadbackRequested = true;
+        try {
+            Object gameRenderer = Minecraft.getInstance().gameRenderer;
+            Object lightmap = invokeNoArg(gameRenderer, "levelLightmap", "getLevelLightmap");
+            Object texture = unwrapTexture(invokeNoArg(lightmap, "texture", "getTexture"));
+            long image = findLong(texture, "image", "vkImage", "handle");
+            int width = findInt(texture, "width", "getWidth");
+            int height = findInt(texture, "height", "getHeight");
+            if (image == 0L || width != 16 || height != 16) {
+                throw new IllegalStateException("Minecraft Vulkan lightmap unavailable: " + image + " " + width + "x" + height);
+            }
+            try (var stack = MemoryStack.stackPush()) {
+                var range = org.lwjgl.vulkan.VkImageSubresourceRange.calloc(stack)
+                        .aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1)
+                        .baseArrayLayer(0).layerCount(1);
+                var barrier = VkImageMemoryBarrier.calloc(1, stack).sType(org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+                        .srcAccessMask(VK_ACCESS_SHADER_READ_BIT).dstAccessMask(VK_ACCESS_TRANSFER_READ_BIT)
+                        .oldLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).newLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+                        .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(image).subresourceRange(range);
+                vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                        0, null, null, barrier);
+            }
+            this.downloadStream.downloadImage(image, width, height, bytes -> {
+                byte[] pixels = new byte[16 * 16 * 4];
+                bytes.get(pixels);
+                if (this.sectionRenderer != null) {
+                    this.sectionRenderer.setLightmapPixels(pixels, 16, 16);
+                }
+                this.lightmapReadbackRequested = false;
+            });
+            this.lightmapReadbackImage = image;
+            Logger.info("Voxy: scheduled Minecraft lightmap Vulkan readback 16x16");
+        } catch (Throwable t) {
+            this.lightmapReadbackRequested = false;
+            Logger.warn("Voxy: Minecraft lightmap Vulkan readback unavailable; using white fallback", t);
+        }
+    }
+
+    private void restoreLightmapLayout(VkCommandBuffer cb) {
+        if (this.lightmapReadbackImage == 0L) {
+            return;
+        }
+        try (var stack = MemoryStack.stackPush()) {
+            var range = org.lwjgl.vulkan.VkImageSubresourceRange.calloc(stack)
+                    .aspectMask(VK_IMAGE_ASPECT_COLOR_BIT).baseMipLevel(0).levelCount(1)
+                    .baseArrayLayer(0).layerCount(1);
+            var barrier = VkImageMemoryBarrier.calloc(1, stack)
+                    .sType(org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+                    .srcAccessMask(VK_ACCESS_TRANSFER_READ_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT)
+                    .oldLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).newLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                    .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(this.lightmapReadbackImage)
+                    .subresourceRange(range);
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    0, null, null, barrier);
+        }
+        this.lightmapReadbackImage = 0L;
     }
 
     private static Object unwrapTexture(Object value) throws Exception {
@@ -744,6 +830,9 @@ public final class VoxyVulkanRenderSystem {
     }
 
     private static Object invokeNoArg(Object value, String... names) throws Exception {
+        if (value == null) {
+            return null;
+        }
         for (String name : names) {
             try {
                 Method method = value.getClass().getMethod(name);
