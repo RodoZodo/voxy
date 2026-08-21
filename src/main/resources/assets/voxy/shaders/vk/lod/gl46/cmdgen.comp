@@ -10,6 +10,15 @@ layout(local_size_x = 128) in;
 #define INDIRECT_SECTION_LOOKUP_BINDING 5
 #define POSITION_SCRATCH_BINDING 6
 #define POSITION_SCRATCH_ACCESS writeonly
+#ifndef MAX_OPAQUE_DRAWS
+#define MAX_OPAQUE_DRAWS 400000
+#endif
+#ifndef MAX_TEMPORAL_DRAWS
+#define MAX_TEMPORAL_DRAWS 100000
+#endif
+#ifndef MAX_POSITIONS
+#define MAX_POSITIONS 400000
+#endif
 
 #import <voxy:lod/section.glsl>
 #import <voxy:lod/gl46/bindings.glsl>
@@ -39,6 +48,9 @@ layout(binding = TRANSLUCENT_DISTANCE_BUFFER_BINDING, std430) restrict buffer Tr
 
 //Note: if i want reverse indexing i need to use the index buffer offset to offset
 void writeCmd(uint idx, uint instance, uint offset, uint quadCount) {
+    if (idx >= MAX_OPAQUE_DRAWS && (idx < TEMPORAL_OFFSET || idx >= TEMPORAL_OFFSET + MAX_TEMPORAL_DRAWS)) {
+        return;
+    }
     DrawCommand cmd;
     cmd.count = quadCount * 6;
     cmd.instanceCount = 1;
@@ -74,6 +86,10 @@ void main() {
 
 
     if (shouldRender) {
+        uint drawId = gl_GlobalInvocationID.x;
+        if (drawId >= MAX_POSITIONS) {
+            return;
+        }
 
         #ifdef HAS_STATISTICS
         atomicAdd(visibleSectionCounts[detail], 1);
@@ -81,8 +97,6 @@ void main() {
 
         uint ptr = extractQuadStart(meta);
         ivec3 relative = ipos-(baseSectionPos>>detail);
-        uint drawId = gl_GlobalInvocationID.x;
-
         positionBuffer[drawId] = extractRawPos(meta);
         uvec4 counts = meta.b;
 

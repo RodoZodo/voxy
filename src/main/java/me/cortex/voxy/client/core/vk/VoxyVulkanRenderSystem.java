@@ -127,6 +127,7 @@ public final class VoxyVulkanRenderSystem {
     private volatile ModelFactory modelFactory;
     private boolean blockAtlasReadbackRequested;
     private long blockAtlasReadbackImage;
+    private static boolean atlasHandleFallbackLogged;
     private volatile GpuMeshService meshService;
 
     //Frame state
@@ -577,6 +578,7 @@ public final class VoxyVulkanRenderSystem {
                             Math.floorDiv((int) Math.floor(camera.pos.z), 32));
                     var camSub = new org.joml.Vector3f((float) (camera.pos.x - (basePos.x << 5)), (float) (camera.pos.y - (basePos.y << 5)), (float) (camera.pos.z - (basePos.z << 5)));
                     this.sectionRenderer.buildDrawCalls(cb, this.traverser.getRenderList(), this.nodeCleaner.visibilityBuffer(), this.geometryData, mvp, basePos, this.nodeCleaner.getVisibilityId(), camSub);
+                    this.sectionRenderer.dumpDebugState(this.downloadStream, this.traverser.getRenderList());
                 } catch (Exception e) {
                     // Section renderer not yet fully wired (e.g. missing geometry) — skip this frame
                 }
@@ -636,7 +638,7 @@ public final class VoxyVulkanRenderSystem {
                 var barrier = VkImageMemoryBarrier.calloc(1, stack).sType(org.lwjgl.vulkan.VK10.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
                         .srcAccessMask(VK_ACCESS_SHADER_READ_BIT).dstAccessMask(VK_ACCESS_TRANSFER_READ_BIT)
                         .oldLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL).newLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
-                        .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(image).subresourceRange(range);
+                        .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(image).subresourceRange(range.levelCount(-1));
                 vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                         0, null, null, barrier);
             }
@@ -671,7 +673,7 @@ public final class VoxyVulkanRenderSystem {
                     .srcAccessMask(VK_ACCESS_TRANSFER_READ_BIT).dstAccessMask(VK_ACCESS_SHADER_READ_BIT)
                     .oldLayout(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL).newLayout(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                     .srcQueueFamilyIndex(-1).dstQueueFamilyIndex(-1).image(this.blockAtlasReadbackImage)
-                    .subresourceRange(range);
+                    .subresourceRange(range.levelCount(-1));
             vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                     0, null, null, barrier);
         }
@@ -692,7 +694,27 @@ public final class VoxyVulkanRenderSystem {
 
     private static long findLong(Object value, String... names) throws Exception {
         Object result = findMember(value, names);
-        return result instanceof Number n ? n.longValue() : 0L;
+        if (result instanceof Number n && n.longValue() != 0L) {
+            return n.longValue();
+        }
+        for (Class<?> c = value == null ? null : value.getClass(); c != null; c = c.getSuperclass()) {
+            for (Field field : c.getDeclaredFields()) {
+                if (field.getType() != long.class && field.getType() != Long.class) {
+                    continue;
+                }
+                field.setAccessible(true);
+                long candidate = ((Number) field.get(value)).longValue();
+                if (candidate != 0L) {
+                    if (!atlasHandleFallbackLogged) {
+                        atlasHandleFallbackLogged = true;
+                        Logger.warn("Voxy: atlas Vulkan image handle fallback field=" + field.getName()
+                                + " type=" + field.getType().getName());
+                    }
+                    return candidate;
+                }
+            }
+        }
+        return 0L;
     }
 
     private static int findInt(Object value, String... names) throws Exception {
@@ -729,7 +751,7 @@ public final class VoxyVulkanRenderSystem {
             } catch (NoSuchMethodException ignored) {
             }
         }
-        throw new NoSuchMethodException(value.getClass().getName());
+        return null;
     }
 
     private int halfNodeCount() {

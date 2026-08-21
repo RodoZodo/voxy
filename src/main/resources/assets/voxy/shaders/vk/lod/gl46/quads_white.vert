@@ -15,6 +15,11 @@ void main() {
     QuadData quad;
     uvec2 pos = positionBuffer[gl_BaseInstance];
     setupQuad(quad, quadData[uint(gl_VertexIndex)>>2], pos, (gl_VertexIndex&3)==1);
+#ifdef DRAW_PARAM_PROBE
+    atomicMax(positionBuffer[399996].x, uint(gl_BaseInstance));
+    atomicMax(positionBuffer[399997].x, uint(gl_VertexIndex));
+    atomicAdd(positionBuffer[399998].x, 1u);
+#endif
     uint cornerId = gl_VertexIndex&3;
     gl_Position = getQuadCornerPos(quad, cornerId);
     interData = quad.attributeData;

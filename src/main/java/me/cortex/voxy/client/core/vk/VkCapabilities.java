@@ -76,6 +76,8 @@ public final class VkCapabilities {
     public final boolean taskShader;
     /** Real multi-draw-indirect-count. MoltenVK often advertises a 1.2 bit without the COUNT commands. */
     public final boolean drawIndirectCount;
+    public final boolean shaderDrawParameters;
+    public final boolean drawIndirectFirstInstance;
 
     public final long totalDeviceMemory;
 
@@ -128,6 +130,8 @@ public final class VkCapabilities {
             this.sparseResidencyBuffer = f.sparseResidencyBuffer();
             this.vertexPipelineStoresAndAtomics = f.vertexPipelineStoresAndAtomics();
             this.fragmentStoresAndAtomics = f.fragmentStoresAndAtomics();
+            this.drawIndirectFirstInstance = f.drawIndirectFirstInstance();
+            this.shaderDrawParameters = features11.shaderDrawParameters();
 
             this.dynamicRendering = features13.dynamicRendering();
             this.hostQueryReset = features12.hostQueryReset();
@@ -233,6 +237,7 @@ public final class VkCapabilities {
         return "VkCapabilities{" + this.vendorLabel() + " " + this.deviceName + " (" + String.format("0x%04x:0x%04x", this.vendorId, this.deviceId)
                 + "), int64=" + this.shaderInt64 + ", subgroup=" + this.subgroupBasic + "/" + this.subgroupArithmetic
                 + "/" + this.subgroupClustered + ", drawIndirectCount=" + this.drawIndirectCount
+                + ", drawParams=" + this.shaderDrawParameters + "/" + this.drawIndirectFirstInstance
                 + ", sparse=" + this.sparseResidencyBuffer + ", mesh=" + this.meshShader
                 + ", dynamicRendering=" + this.dynamicRendering + ", vram=" + (this.totalDeviceMemory >> 20) + "MiB}";
     }

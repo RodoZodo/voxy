@@ -131,7 +131,7 @@ public final class VkTraverser implements AutoCloseable {
         this.scratchQueueA = VkBuffer.deviceLocal(vma, MAX_QUEUE_SIZE * 4L, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         this.scratchQueueB = VkBuffer.deviceLocal(vma, MAX_QUEUE_SIZE * 4L, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         this.renderList = VkBuffer.deviceLocal(vma, MAX_QUEUE_SIZE * 4L,
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
 
         this.layout = new VkPipelineLayout(device, new VkPipelineLayout.Binding[]{
                 new VkPipelineLayout.Binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_COMPUTE_BIT),

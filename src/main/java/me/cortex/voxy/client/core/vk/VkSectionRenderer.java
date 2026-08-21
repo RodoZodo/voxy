@@ -21,6 +21,8 @@ import org.lwjgl.vulkan.VkViewport;
 import org.lwjgl.vulkan.VkWriteDescriptorSet;
 
 import java.util.Map;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 import static org.lwjgl.vulkan.KHRDrawIndirectCount.vkCmdDrawIndexedIndirectCountKHR;
 import static org.lwjgl.vulkan.KHRPushDescriptor.vkCmdPushDescriptorSetKHR;
@@ -63,6 +65,7 @@ public final class VkSectionRenderer implements AutoCloseable {
     private VkSectionGeometryData geometryData;
     private final boolean drawIndirectCount;
     private final VkBuffer hostDrawCountBuffer;
+    private boolean debugStateDumpRequested;
 
     public VkSectionRenderer(VkDevice device, long vma, VkShaderCompiler compiler, ModelStore modelStore) {
         this.device = device;
@@ -70,9 +73,9 @@ public final class VkSectionRenderer implements AutoCloseable {
         var caps = VkContext.INSTANCE.capabilities();
         this.drawIndirectCount = caps != null && caps.drawIndirectCount;
         this.uniformBuffer = VkBuffer.hostVisible(vma, 1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-        this.drawCallBuffer = VkBuffer.deviceLocal(vma, 12_000_000, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        this.drawCallBuffer = VkBuffer.deviceLocal(vma, 12_000_000, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         this.drawCountCallBuffer = VkBuffer.deviceLocal(vma, 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-        this.positionScratchBuffer = VkBuffer.deviceLocal(vma, 3_200_000, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        this.positionScratchBuffer = VkBuffer.deviceLocal(vma, 3_200_000, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         this.distanceCountBuffer = VkBuffer.deviceLocal(vma, 404_096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         if (this.drawIndirectCount) {
             this.hostDrawCountBuffer = null;
@@ -134,6 +137,8 @@ public final class VkSectionRenderer implements AutoCloseable {
         cmdgenDefs.put("INDIRECT_SECTION_LOOKUP_BINDING","5"); cmdgenDefs.put("POSITION_SCRATCH_BINDING","6");
         cmdgenDefs.put("POSITION_SCRATCH_ACCESS","writeonly"); cmdgenDefs.put("TRANSLUCENT_DISTANCE_BUFFER_BINDING","7");
         cmdgenDefs.put("TRANSLUCENT_WRITE_BASE","1024"); cmdgenDefs.put("TEMPORAL_OFFSET","500000");
+        cmdgenDefs.put("MAX_OPAQUE_DRAWS","400000"); cmdgenDefs.put("MAX_TEMPORAL_DRAWS","100000");
+        cmdgenDefs.put("MAX_POSITIONS","400000");
         cmdgenDefs.put("ALL_VISIBLE","");
         var cmdgen = compile(compiler, "lod/gl46/cmdgen.comp", cmdgenDefs);
         this.cmdgenPipeline = VkPipelineBuilder.createCompute(device, this.cmdgenLayout, cmdgen);
@@ -174,6 +179,8 @@ public final class VkSectionRenderer implements AutoCloseable {
         tintDefsWhite.put("MODEL_BUFFER_BINDING","3");
         tintDefsWhite.put("MODEL_COLOUR_BUFFER_BINDING","4");
         tintDefsWhite.put("POSITION_SCRATCH_BINDING","5");
+        tintDefsWhite.put("POSITION_SCRATCH_ACCESS","");
+        tintDefsWhite.put("DRAW_PARAM_PROBE","");
         tintDefsWhite.put("LIGHTING_SAMPLER_BINDING","6");
         tintDefsWhite.put("NO_SHADE_FACE_TINT","1.0");
         tintDefsWhite.put("UP_FACE_TINT","1.0");
@@ -203,8 +210,9 @@ public final class VkSectionRenderer implements AutoCloseable {
             }, true);
             // Face-tint defines (match CardinalLighting.DEFAULT 1.0 fallback when level null)
             var tintDefs = new java.util.HashMap<String,String>();
-            tintDefs.put("QUAD_BUFFER_BINDING","1"); tintDefs.put("MODEL_BUFFER_BINDING","3"); tintDefs.put("MODEL_COLOUR_BUFFER_BINDING","4");
+            tintDefs.put("QUAD_BUFFER_BINDING","1");
             tintDefs.put("POSITION_SCRATCH_BINDING","5"); tintDefs.put("LIGHTING_SAMPLER_BINDING","6");
+            tintDefs.put("POSITION_SCRATCH_ACCESS",""); tintDefs.put("DRAW_PARAM_PROBE","");
             tintDefs.put("BLOCK_MODEL_TEXTURE_BINDING","7"); tintDefs.put("DEPTH_TEXTURE_BINDING","2");
             tintDefs.put("USE_REVERSE_Z",""); tintDefs.put("USE_ZERO_ONE_DEPTH","");
             // Cardinal lighting tints — use defaults (1.0) if level not yet available
@@ -238,8 +246,9 @@ public final class VkSectionRenderer implements AutoCloseable {
                     new VkPipelineLayout.Binding(7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_SHADER_STAGE_FRAGMENT_BIT),
             }, true);
             var tintDefs2 = new java.util.HashMap<String,String>();
-            tintDefs2.put("QUAD_BUFFER_BINDING","1"); tintDefs2.put("MODEL_BUFFER_BINDING","3"); tintDefs2.put("MODEL_COLOUR_BUFFER_BINDING","4");
+            tintDefs2.put("QUAD_BUFFER_BINDING","1");
             tintDefs2.put("POSITION_SCRATCH_BINDING","5"); tintDefs2.put("LIGHTING_SAMPLER_BINDING","6");
+            tintDefs2.put("POSITION_SCRATCH_ACCESS",""); tintDefs2.put("DRAW_PARAM_PROBE","");
             tintDefs2.put("BLOCK_MODEL_TEXTURE_BINDING","7"); tintDefs2.put("DEPTH_TEXTURE_BINDING","2");
             tintDefs2.put("USE_REVERSE_Z",""); tintDefs2.put("USE_ZERO_ONE_DEPTH","");
             tintDefs2.put("TRANSLUCENT",""); tintDefs2.put("NO_SHADE_FACE_TINT","1.0"); tintDefs2.put("UP_FACE_TINT","1.0");
@@ -274,6 +283,8 @@ public final class VkSectionRenderer implements AutoCloseable {
             this.depthBoundingInitialized = true;
         }
         this.updateSceneUniform(mvp, baseSectionPos, frameId, cameraSubPos);
+        VkSync.memoryBarrier(cb);
+        this.positionScratchBuffer.fill(cb, 399996L * 8L, 3L * 8L, 0);
         VkSync.memoryBarrier(cb);
 
         // Upload uniform (92 bytes used, 1024 allocated)
@@ -484,6 +495,89 @@ public final class VkSectionRenderer implements AutoCloseable {
             region.get(0).srcOffset(0).dstOffset(0).size(32);
             vkCmdCopyBuffer(cb, this.drawCountCallBuffer.handle(), this.hostDrawCountBuffer.handle(), region);
         }
+    }
+
+    /** Schedule one bounded GPU state snapshot for diagnosing indirect draw corruption. */
+    public void dumpDebugState(VkDownloadStream downloads, VkBuffer renderList) {
+        if (this.debugStateDumpRequested || downloads == null || renderList == null || this.geometryData == null) {
+            return;
+        }
+        this.debugStateDumpRequested = true;
+        downloads.download(renderList, 0, 17L * 4L, VkSectionRenderer::logRenderList);
+        downloads.download(this.drawCallBuffer, 0, 8L * 20L, VkSectionRenderer::logCommands);
+        downloads.download(this.drawCountCallBuffer, 0, 32, bytes -> {
+            var b = bytes.order(ByteOrder.nativeOrder());
+            Logger.info("Voxy (Vulkan) debug draw counters dispatch=" + b.getInt(0)
+                    + " opaque=" + b.getInt(12) + " translucent=" + b.getInt(16)
+                    + " temporal=" + b.getInt(20));
+        });
+        downloads.download(this.positionScratchBuffer, 0, 8L * 8L,
+                bytes -> logPositions(bytes));
+        downloads.download(this.positionScratchBuffer, 399996L * 8L, 3L * 8L,
+                VkSectionRenderer::logDrawParameterProbe);
+        downloads.download(this.geometryData.metadataBuffer(), 0, 16L * VkSectionGeometryData.SECTION_METADATA_SIZE,
+                bytes -> logMetadata(bytes));
+    }
+
+    private static void logRenderList(ByteBuffer bytes) {
+        var b = bytes.order(ByteOrder.nativeOrder());
+        int count = b.getInt(0);
+        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug render list count=").append(count);
+        for (int i = 0; i < 16; i++) {
+            out.append(" [").append(i).append('=').append(Integer.toUnsignedString(b.getInt((i + 1) * 4))).append(']');
+        }
+        Logger.info(out.toString());
+    }
+
+    private static void logCommands(ByteBuffer bytes) {
+        var b = bytes.order(ByteOrder.nativeOrder());
+        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug commands");
+        for (int i = 0; i < 8; i++) {
+            int p = i * 20;
+            out.append(" [").append(i).append(": count=").append(b.getInt(p))
+                    .append(", instances=").append(b.getInt(p + 4))
+                    .append(", firstIndex=").append(b.getInt(p + 8))
+                    .append(", baseVertex=").append(b.getInt(p + 12))
+                    .append(", baseInstance=").append(b.getInt(p + 16)).append(']');
+        }
+        Logger.info(out.toString());
+    }
+
+    private static void logPositions(ByteBuffer bytes) {
+        var b = bytes.order(ByteOrder.nativeOrder());
+        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug positions");
+        for (int i = 0; i < 8; i++) {
+            int p = i * 8;
+            out.append(" [").append(i).append(": ").append(Integer.toUnsignedString(b.getInt(p)))
+                    .append(',').append(Integer.toUnsignedString(b.getInt(p + 4))).append(']');
+        }
+        Logger.info(out.toString());
+    }
+
+    private static void logDrawParameterProbe(ByteBuffer bytes) {
+        var b = bytes.order(ByteOrder.nativeOrder());
+        Logger.info("Voxy (Vulkan) debug draw-parameter probe maxBaseInstance="
+                + Integer.toUnsignedString(b.getInt(0))
+                + " maxVertexIndex=" + Integer.toUnsignedString(b.getInt(8))
+                + " invocations=" + Integer.toUnsignedString(b.getInt(16)));
+    }
+
+    private static void logMetadata(ByteBuffer bytes) {
+        var b = bytes.order(ByteOrder.nativeOrder());
+        StringBuilder out = new StringBuilder("Voxy (Vulkan) debug metadata");
+        for (int i = 0; i < 4; i++) {
+            int p = i * VkSectionGeometryData.SECTION_METADATA_SIZE;
+            out.append(" [").append(i)
+                    .append(": rawPos=").append(Integer.toUnsignedString(b.getInt(p)))
+                    .append(',').append(Integer.toUnsignedString(b.getInt(p + 4)))
+                    .append(" quadStart=").append(Integer.toUnsignedString(b.getInt(p + 12)))
+                    .append(" aabb=").append(Integer.toUnsignedString(b.getInt(p + 8)))
+                    .append(" counts=").append(Integer.toUnsignedString(b.getInt(p + 16)))
+                    .append(',').append(Integer.toUnsignedString(b.getInt(p + 20)))
+                    .append(',').append(Integer.toUnsignedString(b.getInt(p + 24)))
+                    .append(',').append(Integer.toUnsignedString(b.getInt(p + 28))).append(']');
+        }
+        Logger.info(out.toString());
     }
 
     private void drawIndexedIndirect(VkCommandBuffer cb, long drawOffset, long countOffset, int maxDraws) {
