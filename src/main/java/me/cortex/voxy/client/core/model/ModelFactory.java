@@ -118,6 +118,7 @@ public class ModelFactory {
     private final Mapper mapper;
     private final ModelStore storage;
     private volatile long bakeRevision;
+    private volatile Runnable atlasReadyCallback;
 
 
     private final ConcurrentLinkedDeque<BlockBake> bakeQueue = new ConcurrentLinkedDeque<>();
@@ -302,6 +303,9 @@ public class ModelFactory {
     }
 
     public boolean processAllThings() {
+        if (!this.bakery2.isAtlasReady()) {
+            return false;
+        }
         var biomeEntry = this.biomeQueue.poll();
         while (biomeEntry != null) {
             var biomeRegistry = Minecraft.getInstance().level.registryAccess().lookupOrThrow(Registries.BIOME);
@@ -393,6 +397,17 @@ public class ModelFactory {
 
     public ModelStore getStore() {
         return this.storage;
+    }
+
+    public void setAtlasReadyCallback(Runnable callback) {
+        this.atlasReadyCallback = callback;
+    }
+
+    public void notifyAtlasReady() {
+        Runnable callback = this.atlasReadyCallback;
+        if (callback != null) {
+            callback.run();
+        }
     }
 
     public int[] getIdMappingsView() {
@@ -1085,36 +1100,6 @@ public class ModelFactory {
 
     public int getBakedCount() {
         return this.modelTexture2id.size();
-    }
-
-    /**
-     * Rebuild all known models after the rasterizer's source atlas changes. The Vulkan path may
-     * receive the Minecraft atlas asynchronously, after some models were baked against the white
-     * bootstrap texture.
-     */
-    public void rebakeKnownModelsAfterAtlasReadback() {
-        int[] known = new int[this.idMappings.length];
-        int count = 0;
-        for (int blockId = 0; blockId < this.idMappings.length; blockId++) {
-            if (this.idMappings[blockId] != -1) {
-                known[count++] = blockId;
-            }
-        }
-        this.modelTexture2id.clear();
-        Arrays.fill(this.idMappings, -1);
-        Arrays.fill(this.metadataCache, 0L);
-        Arrays.fill(this.fluidStateLUT, -1);
-        this.modelsRequiringBiomeColours.clear();
-        this.blockStatesInFlightLock.lock();
-        try {
-            this.blockStatesInFlight.clear();
-        } finally {
-            this.blockStatesInFlightLock.unlock();
-        }
-        for (int i = 0; i < count; i++) {
-            this.addEntry(known[i]);
-        }
-        Logger.info("Voxy: queued " + count + " model re-bakes after Vulkan atlas readback");
     }
 
     public int getInflightCount() {

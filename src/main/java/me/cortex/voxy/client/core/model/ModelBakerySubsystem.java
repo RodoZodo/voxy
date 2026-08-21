@@ -47,7 +47,9 @@ public class ModelBakerySubsystem {
                 e = new RuntimeException("unhandled excpetion not added");
             }
             this.processingThreadException = e;
+            Logger.error("Voxy: model bakery processor died", e);
         });
+        this.factory.setAtlasReadyCallback(() -> LockSupport.unpark(this.processingThread));
         this.processingThread.start();
     }
 
@@ -56,6 +58,12 @@ public class ModelBakerySubsystem {
             throw new RuntimeException(this.processingThreadException);
         }
         this.factory.processUploads();
+    }
+
+    public Throwable pollProcessingThreadException() {
+        Throwable exception = this.processingThreadException;
+        this.processingThreadException = null;
+        return exception;
     }
 
     public void shutdown() {
@@ -89,17 +97,6 @@ public class ModelBakerySubsystem {
         this.enqueueLock.lock();
         this.factory.addEntry(blockId);
         this.enqueueLock.unlock();
-        LockSupport.unpark(this.processingThread);
-    }
-
-    public void rebakeKnownModelsAfterAtlasReadback() {
-        this.seenIdsLock.lock();
-        try {
-            this.seenIds.clear();
-        } finally {
-            this.seenIdsLock.unlock();
-        }
-        this.factory.rebakeKnownModelsAfterAtlasReadback();
         LockSupport.unpark(this.processingThread);
     }
 

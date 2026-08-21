@@ -126,13 +126,17 @@ public final class VoxyVulkanRenderSystem {
     private VkSectionRenderer sectionRenderer;
     private boolean activeHalf;
     private volatile ModelFactory modelFactory;
-    private volatile ModelBakerySubsystem modelBakery;
-    private boolean atlasRebakeRequested;
+    private volatile ModelBakerySubsystem bakeryErrorSource;
+    private boolean bakeryErrorLogged;
+    private long lastRenderSubmitErrorNanos;
+    private long lastRenderEndedErrorNanos;
     private boolean blockAtlasReadbackRequested;
     private long blockAtlasReadbackImage;
     private boolean lightmapReadbackRequested;
     private long lightmapReadbackImage;
     private long lightmapReadbackFrames;
+    private long lastLightmapReadbackNanos;
+    private boolean lightmapReadbackSuccessLogged;
     private static boolean atlasHandleFallbackLogged;
     private volatile GpuMeshService meshService;
 
@@ -260,16 +264,19 @@ public final class VoxyVulkanRenderSystem {
         this.modelFactory = factory;
     }
 
-    public void setModelBakery(ModelBakerySubsystem bakery) {
-        this.modelBakery = bakery;
+    public void setBakeryErrorSource(ModelBakerySubsystem bakery) {
+        this.bakeryErrorSource = bakery;
+        this.bakeryErrorLogged = false;
     }
 
     public void clearModelFactory() {
         this.modelFactory = null;
-        this.modelBakery = null;
-        this.atlasRebakeRequested = false;
+        this.bakeryErrorSource = null;
+        this.bakeryErrorLogged = false;
         this.lightmapReadbackRequested = false;
         this.lightmapReadbackImage = 0L;
+        this.lastLightmapReadbackNanos = 0L;
+        this.lightmapReadbackSuccessLogged = false;
     }
 
     public void setMeshService(GpuMeshService service) {
@@ -476,7 +483,11 @@ public final class VoxyVulkanRenderSystem {
                     this.sectionRenderer.renderTranslucent(cb, w, h);
                 }
             } catch (Exception e) {
-                // Renderer not yet fully wired — skip this frame
+                long now = System.nanoTime();
+                if (now - this.lastRenderSubmitErrorNanos >= 5_000_000_000L) {
+                    this.lastRenderSubmitErrorNanos = now;
+                    Logger.warn("Voxy: Vulkan LoD draw submission failed; skipping this pass", e);
+                }
             }
         }
     }
@@ -507,6 +518,13 @@ public final class VoxyVulkanRenderSystem {
         }
         this.terrainPassActive = false;
         this.lightmapReadbackFrames++;
+        if (!this.bakeryErrorLogged && this.bakeryErrorSource != null) {
+            Throwable bakeryError = this.bakeryErrorSource.pollProcessingThreadException();
+            if (bakeryError != null) {
+                this.bakeryErrorLogged = true;
+                Logger.error("Voxy: Vulkan path detected model bakery processor failure", bakeryError);
+            }
+        }
 
         var mc = Minecraft.getInstance();
         var camera = this.currentCamera();
@@ -598,7 +616,11 @@ public final class VoxyVulkanRenderSystem {
                         this.sectionRenderer.dumpDebugState(this.downloadStream, this.traverser.getRenderList(), this.lightmapReadbackFrames);
                     }
                 } catch (Exception e) {
-                    // Section renderer not yet fully wired (e.g. missing geometry) — skip this frame
+                    long now = System.nanoTime();
+                    if (now - this.lastRenderEndedErrorNanos >= 5_000_000_000L) {
+                        this.lastRenderEndedErrorNanos = now;
+                        Logger.warn("Voxy: Vulkan LoD draw-call build failed; skipping this pass", e);
+                    }
                 }
             }
         }
@@ -671,10 +693,7 @@ public final class VoxyVulkanRenderSystem {
                             | (bytes.get(p + 3) & 0xff);
                 }
                 this.modelFactory.bakery2.setVulkanAtlasPixels(pixels, width, height);
-                if (!this.atlasRebakeRequested && this.modelBakery != null) {
-                    this.atlasRebakeRequested = true;
-                    this.modelBakery.rebakeKnownModelsAfterAtlasReadback();
-                }
+                this.modelFactory.notifyAtlasReady();
             });
             this.blockAtlasReadbackImage = image;
             Logger.info("Voxy: scheduled Minecraft block-atlas Vulkan readback " + width + "x" + height);
@@ -704,11 +723,13 @@ public final class VoxyVulkanRenderSystem {
     }
 
     private void requestLightmapReadback(VkCommandBuffer cb) {
-        if (this.lightmapReadbackRequested || this.lightmapReadbackFrames % 20 != 0
+        long now = System.nanoTime();
+        if (this.lightmapReadbackRequested || now - this.lastLightmapReadbackNanos < 500_000_000L
                 || this.downloadStream == null || cb == null || this.sectionRenderer == null) {
             return;
         }
         this.lightmapReadbackRequested = true;
+        this.lastLightmapReadbackNanos = now;
         try {
             Object gameRenderer = Minecraft.getInstance().gameRenderer;
             Object lightmap = invokeNoArg(gameRenderer, "levelLightmap", "getLevelLightmap");
@@ -739,7 +760,10 @@ public final class VoxyVulkanRenderSystem {
                 this.lightmapReadbackRequested = false;
             });
             this.lightmapReadbackImage = image;
-            Logger.info("Voxy: scheduled Minecraft lightmap Vulkan readback 16x16");
+            if (!this.lightmapReadbackSuccessLogged) {
+                this.lightmapReadbackSuccessLogged = true;
+                Logger.info("Voxy: scheduled Minecraft lightmap Vulkan readback 16x16");
+            }
         } catch (Throwable t) {
             this.lightmapReadbackRequested = false;
             Logger.warn("Voxy: Minecraft lightmap Vulkan readback unavailable; using white fallback", t);

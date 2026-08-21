@@ -43,6 +43,7 @@ public class SoftwareModelTextureBakery {
     private final SoftwareRasterizer rasterizer = new SoftwareRasterizer(ModelFactory.MODEL_TEXTURE_SIZE);
 
     private final FluidRenderer fr;
+    private volatile boolean atlasReady;
     public SoftwareModelTextureBakery() {
         this.fr = new FluidRenderer(Minecraft.getInstance().getModelManager().getFluidStateModelSet());
     }
@@ -57,6 +58,11 @@ public class SoftwareModelTextureBakery {
         var texture = new int[width * height];
         java.util.Arrays.fill(texture, -1);//white opaque
         this.rasterizer.setSamplerTexture(texture, width, height);
+        try {
+            this.atlasReady = !me.cortex.voxy.client.core.vk.VkContext.INSTANCE.isVulkanActive();
+        } catch (Throwable ignored) {
+            this.atlasReady = true;
+        }
     }
 
     public void setVulkanAtlasPixels(int[] texture, int width, int height) {
@@ -64,7 +70,12 @@ public class SoftwareModelTextureBakery {
             throw new IllegalArgumentException("Invalid Vulkan atlas readback");
         }
         this.rasterizer.setSamplerTexture(texture, width, height);
+        this.atlasReady = true;
         Logger.info("Voxy: model bakery switched to Minecraft Vulkan block atlas " + width + "x" + height);
+    }
+
+    public boolean isAtlasReady() {
+        return this.atlasReady;
     }
 
     private void bakeBlockModel(BlockState state) {
